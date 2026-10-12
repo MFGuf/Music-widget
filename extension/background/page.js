@@ -23,6 +23,9 @@ function note() {
   if (!host.connected) {
     return hostNote() || "нет связи с виджетом";
   }
+  if (store.lastPageError) {
+    return store.lastPageError;
+  }
   if (store.sources.size === 0) {
     return "Откройте вкладку VK Музыки и включите трек";
   }
@@ -123,8 +126,19 @@ function ack(id, ok, msg) {
 // Content script сообщает, что скрипт главного мира загрузился. Не ждём
 // конца интервала: первый снимок полезен сразу.
 browser.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.t === "pageReady") {
+  if (!msg) {
+    return undefined;
+  }
+  if (msg.t === "pageReady") {
+    // Скрипт главного мира поднялся - снимаем прежнюю жалобу на него
+    // и не ждём конца интервала.
+    if (store.lastPageError) {
+      store.lastPageError = "";
+    }
     schedulePoll(0);
+  } else if (msg.t === "pageBlocked") {
+    store.lastPageError = trimText(msg.reason, 200);
+    log(store.lastPageError);
   }
   return undefined;
 });

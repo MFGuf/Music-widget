@@ -45,10 +45,14 @@ function randomToken() {
 
 // --- внедрение скрипта главного мира -----------------------------------------
 
+// Тег <script> выполняется АСИНХРОННО: пока он грузится, нашего слушателя
+// сообщений ещё не существует. Поэтому инициализация выносится в обработчик
+// load - если отправить init сразу после appendChild, он уйдёт в пустоту и
+// обмен не поднимется до перезагрузки страницы.
 function injectPageScript() {
   const root = document.head || document.documentElement;
   if (!root) {
-    // Совсем ранний document_start:<head> ещё не создан. Повторяем попытку.
+    // Совсем ранний document_start: <head> ещё не создан. Повторяем попытку.
     document.addEventListener("DOMContentLoaded", injectPageScript, { once: true });
     return;
   }
@@ -57,15 +61,38 @@ function injectPageScript() {
   // Страница не должна знать, откуда пришёл скрипт, а главный мир он
   // запускает только будучи добавленным в DOM.
   script.async = false;
-  script.addEventListener("load", () => script.remove());
+  script.addEventListener("load", () => {
+    script.remove();
+    initPageScript();
+  });
   root.appendChild(script);
+}
+
+// Скрипт главного мира может и не запуститься: страница способна запретить
+// подгрузку по своей политике безопасности (CSP). Тогда обмена нет, и
+// виджет должен сказать об этом прямо, а не молчать.
+let mainWorldReady = false;
+let injectAttempts = 0;
+const MAX_INJECT_ATTEMPTS = 3;
+
+function ensurePageScript() {
+  if (mainWorldReady || injectAttempts >= MAX_INJECT_ATTEMPTS) {
+    return;
+  }
+  injectAttempts++;
+  injectPageScript();
+}
+
+function reportBlocked(reason) {
+  const message = "Скрипт страницы VK не запустился (" + reason +
+    "). Если включена жёсткая политика безопасности, возможности виджета ограничены.";
+  browser.runtime.sendMessage({ t: "pageBlocked", reason: message }).catch(() => {});
 }
 
 function start() {
   document.documentElement.setAttribute(GUARD_ATTR, GUARD_VALUE);
-  injectPageScript();
   browser.runtime.onMessage.addListener(onRuntimeMessage);
-  initPageScript();
+  ensurePageScript();
 }
 
 // Страница VK - SPA: при переходе между треками документ не перезагружается,
@@ -118,7 +145,12 @@ window.addEventListener("message", (ev) => {
 async function initPageScript() {
   const ready = await postToPage("init", {});
   if (ready) {
+    mainWorldReady = true;
     browser.runtime.sendMessage({ t: "pageReady" }).catch(() => {});
+    return;
+  }
+  if (!mainWorldReady) {
+    reportBlocked("не ответил на init");
   }
 }
 
@@ -129,9 +161,19 @@ function onRuntimeMessage(msg) {
     return;
   }
   if (msg.t === "poll") {
+    // Обмен мог не подняться при загрузке страницы - пробуем ещё раз,
+    // но не бесконечно: иначе вкладка без поддержки будет грузить скрипт
+    // каждые две трети секунды.
+    ensurePageScript();
+    if (!mainWorldReady) {
+      return Promise.resolve(null);
+    }
     return postToPage("getState", {});
   }
   if (msg.t === "cmd") {
+    if (!mainWorldReady) {
+      return Promise.resolve({ ok: false, msg: "обмен со страницей не работает" });
+    }
     return postToPage("cmd", { action: msg.action, ratio: msg.ratio });
   }
   return undefined;

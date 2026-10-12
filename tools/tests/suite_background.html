@@ -533,6 +533,23 @@ function tick() {
 
     // --- page.js: диагностика и снимок --------------------------------------
 
+    // Content script сообщает, что скрипт главного мира не поднялся.
+    var onMessage = window.__listeners.runtimeMessage;
+    assert("page: слушатель сообщений content script зарегистрирован", !!onMessage);
+
+    window.__sentToHost.length = 0;
+    onMessage({ t: "pageBlocked", reason: "страница запрещает внедрение скриптов" });
+    assert("page: жалоба вкладки сохранена", store.lastPageError.length > 0);
+    assert("page: жалоба вкладки показывается виджету",
+      note().indexOf("запрещает внедрение") >= 0, note());
+
+    onMessage({ t: "pageReady" });
+    assertEqual("page: успешный запуск снимает жалобу", store.lastPageError, "");
+
+    onMessage({ t: "ерунда" });
+    onMessage(null);
+    assert("page: неизвестные сообщения не роняют фон", store.lastPageError === "");
+
     assert("page: без вкладок виджету объяснено почему", note().length > 0);
 
     // Возвращаем соединение и проверяем снимок. Прежний промис connectNative
