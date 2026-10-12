@@ -5,31 +5,26 @@
 //
 // Схема работы:
 //   1. на старте подключаемся к хосту виджета (native.js);
-//   2. каждые POLL_INTERVAL_MS спрашиваем у вкладок VK их состояние;
-//   3. собираем список источников и отправляем виджету снимок;
-//   4. команды из виджета маршрутизируем в нужную вкладку.
+//   2. каждые POLL_INTERVAL_MS вкладки отдают своё состояние (tabs.js);
+//   3. из ответов VK API дополняем длительность и обложку (api.js);
+//   4. отправляем виджету снимок и выполняем его команды.
 //
-// Зависит от protocol.js и native.js, подключённых раньше в page.html.
+// Модули подключены в page.html в порядке:
+//   protocol -> store -> native -> tabs -> api -> art -> page
 
-// Источники: key -> описание вкладки (id, url).
-const sources = new Map();
-
-// Что виджет видит как выбранный источник.
-let selectedKey = null;
-
-// Последний снимок - чтобы не гонять команды в устаревшую вкладку.
-let lastItems = [];
-
-// Что расширение уже знает о треках из перехваченных ответов VK API:
-// cacheKey -> { title, artist, dur, artUrl }
-const trackMeta = new Map();
+// Почему виджету не отправляется снимок при каждом событии вкладки:
+// состояние всегда нормализуется в rebuildItems(), а виджет сам решает,
+// что показывать.
 
 function note() {
   if (!host.connected) {
     return hostNote() || "нет связи с виджетом";
   }
-  if (sources.size === 0) {
+  if (store.sources.size === 0) {
     return "Откройте вкладку VK Музыки и включите трек";
+  }
+  if (store.lastItems.length === 0) {
+    return "Вкладка VK Музыки ещё не отвечает";
   }
   return lastError ? lastError : "Подключено";
 }
@@ -37,8 +32,8 @@ function note() {
 function sendState() {
   sendToHost({
     t: "state",
-    items: lastItems,
-    selected: selectedKey,
+    items: store.lastItems,
+    selected: store.selectedKey,
     note: note(),
   });
 }
@@ -47,12 +42,12 @@ function sendState() {
 
 host.onCommand = async (msg) => {
   const action = msg.action;
-  const key = msg.key || selectedKey;
   const id = msg.id;
 
   if (action === "select") {
-    if (sources.has(key)) {
-      selectedKey = key;
+    if (store.sources.has(parseTabId(msg.key))) {
+      store.selectedKey = msg.key;
+      store.userPicked = true;
       sendState();
       ack(id, true, "");
     } else {
@@ -61,15 +56,14 @@ host.onCommand = async (msg) => {
     return;
   }
 
-  if (!key || !sources.has(key)) {
+  const source = resolveSource(msg.key);
+  if (!source) {
     ack(id, false, "нет вкладки для команды");
     return;
   }
 
-  const source = sources.get(key);
   let ok = true;
   let text = "";
-
   try {
     const reply = await browser.tabs.sendMessage(source.tabId, {
       t: "cmd",
@@ -79,14 +73,40 @@ host.onCommand = async (msg) => {
     ok = !!(reply && reply.ok);
     text = (reply && reply.msg) || "";
   } catch (e) {
-    // Самая частая причина: вкладка перезагрузилась и content script
-    // в ней ещё не успел подняться.
+    // Обычно это перезагрузка вкладки: content script в ней ещё не поднят.
     ok = false;
     text = String((e && e.message) || e);
   }
-
   ack(id, ok, text);
 };
+
+// Ключ приходит от виджета строкой ("tab:42"), а хранилище ключуется
+// числом id вкладки.
+function parseTabId(key) {
+  const text = String(key == null ? "" : key);
+  const id = text.startsWith("tab:") ? text.slice(4) : text;
+  const num = Number(id);
+  return isFinite(num) ? num : null;
+}
+
+// Виджет может не присылать ключ вовсе - тогда команда идёт в выбранный
+// источник. Если ключ пришёл, но вкладки больше нет, тоже откатываемся на
+// выбранную: вкладка могла закрыться между опросом и нажатием кнопки, и
+// пользователь ожидает реакцию, а не ошибку.
+function resolveSource(key) {
+  if (key != null) {
+    const byKey = parseTabId(key);
+    if (byKey !== null && store.sources.has(byKey)) {
+      return store.sources.get(byKey);
+    }
+  }
+  const selected = parseTabId(store.selectedKey);
+  if (selected !== null && store.sources.has(selected)) {
+    return store.sources.get(selected);
+  }
+  const first = store.sources.values().next();
+  return first.done ? null : first.value;
+}
 
 function ack(id, ok, msg) {
   if (id === undefined || id === null) {
@@ -97,7 +117,16 @@ function ack(id, ok, msg) {
 
 // --- Жизненный цикл ---------------------------------------------------------
 
-browser.runtime.onInstalled.addListener(() => startHost());
-browser.runtime.onStartup.addListener(() => startHost());
+browser.runtime.onInstalled.addListener(() => start());
+browser.runtime.onStartup.addListener(() => start());
 
-startHost();
+function start() {
+  startHost();
+  startTabPolling();
+  startApiSniffing();
+  browser.tabs.onUpdated.addListener(onTabUpdated);
+  browser.tabs.onRemoved.addListener(onTabRemoved);
+  injectIntoOpenTabs().then(() => pollTabs());
+}
+
+start();

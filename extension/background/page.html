@@ -5,10 +5,15 @@
   <title>Music Widget - background</title>
 </head>
 <body>
-  <!-- Порядок важен: protocol.js даёт константы, native.js - транспорт,
-       page.js использует оба. -->
+  <!-- Порядок важен: protocol.js даёт константы, store.js - общее
+       состояние, native.js - транспорт, tabs.js и api.js - источники,
+       page.js связывает всё вместе. -->
   <script src="protocol.js"></script>
+  <script src="store.js"></script>
   <script src="native.js"></script>
+  <script src="tabs.js"></script>
+  <script src="api.js"></script>
+  <script src="art.js"></script>
   <script src="page.js"></script>
 </body>
 </html>

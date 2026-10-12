@@ -129,7 +129,11 @@ window.__lastState = function () {
 
 <!-- Фоновые скрипты в порядке загрузки из page.html -->
 <script src="/extension/background/protocol.js"></script>
+<script src="/extension/background/store.js"></script>
 <script src="/extension/background/native.js"></script>
+<script src="/extension/background/tabs.js"></script>
+<script src="/extension/background/api.js"></script>
+<script src="/extension/background/art.js"></script>
 <script src="/extension/background/page.js"></script>
 
 <script>
@@ -239,6 +243,9 @@ function tick() {
     host.retryTimer = null;
     host.retryDelayMs = 1000;
 
+    // Без соединения отправка не должна падать - просто отказывает.
+    assertEqual("native: без порта отправка отказывает", sendToHost({ t: "state", items: [] }), false);
+
     // Хост не зарегистрирован: connectNative отклоняется.
     window.__calls.length = 0;
     connectHost();
@@ -249,13 +256,183 @@ function tick() {
     assert("native: после ошибки запланирован повтор", host.retryTimer !== null);
     host.retryTimer = null;
 
-    // --- page.js -----------------------------------------------------------
+    // --- tabs.js ------------------------------------------------------------
+
+    // Автоматический таймер мешал бы проверкам - он мог бы опросить
+    // вкладки в середине теста.
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    // При загрузке страницы start() сам запускает первый опрос. Он мог бы
+    // подхватить тестовые вкладки и обновить выбор источника прямо
+    // посреди проверки, поэтому сначала гасим его и ждём завершения.
+    window.__tabs = [];
+    await tick();
+    await tick();
+    for (var w = 0; w < 20 && polling; w++) {
+      await tick();
+    }
+    assert("tabs: стартовый опрос завершился до проверок", polling === false);
+
+    // В проверках native.js порт хоста обрывался намеренно. Без соединения
+    // не уходят ack, а note() сообщает про виджет, а не про вкладки -
+    // поэтому связь восстанавливаем.
+    connectHost();
+    window.__resolveHost();
+    await tick();
+    await tick();
+    assert("tabs: связь с хостом восстановлена", host.connected === true);
+
+    var VK_TABS = [
+      { id: 1, url: "https://vk.com/music", status: "complete", title: "VK Музыка" },
+      { id: 2, url: "https://vk.com/music-1_2", status: "complete", title: "Артист" },
+      { id: 3, url: "https://vk.com/feed", status: "complete", title: "Новости" },
+      { id: 4, url: "https://vk.com/music", status: "loading", title: "Грузится" },
+      { id: 5, url: "https://example.com/music", status: "complete", title: "Чужой сайт" },
+      { id: 6, url: "https://vk.com/feed", status: "complete", title: "Ещё новости" },
+    ];
+    window.__tabs = VK_TABS;
+    window.__sendMessageImpl = function (tabId) {
+      if (tabId === 1) {
+        return Promise.resolve({ title: "Первый трек", artist: "Первый артист", playing: true, pos: 30, dur: 0, frac: 0.25, bands: [0.1, 0.2] });
+      }
+      if (tabId === 2) {
+        return Promise.resolve({ title: "Второй трек", artist: "Второй артист", playing: false, pos: 0, dur: 200, frac: 0 });
+      }
+      return Promise.reject(new Error("нет получателя"));
+    };
+
+    await pollTabs();
+    note("источников найдено: " + store.sources.size + ", готово: " + store.lastItems.length);
+
+    assertEqual("tabs: найдены только вкладки VK Музыки",
+      Array.from(store.sources.keys()).sort(), [1, 2]);
+    assert("tabs: незагруженная вкладка пропущена", !store.sources.has(4));
+    assert("tabs: чужой сайт пропущен", !store.sources.has(5));
+    assertEqual("tabs: в источниках только ответившие", store.lastItems.length, 2);
+
+    var first = store.lastItems.find(function (i) { return i.key === "tab:1"; });
+    var second = store.lastItems.find(function (i) { return i.key === "tab:2"; });
+    assert("tabs: название трека из вкладки", first && first.title === "Первый трек", JSON.stringify(first));
+    assert("tabs: исполнитель из вкладки", first && first.artist === "Первый артист");
+    assert("tabs: признак играет", first && first.playing === true);
+    assertEqual("tabs: позиция", first && first.pos, 30);
+    assertEqual("tabs: доля", first && first.frac, 0.25);
+    assertEqual("tabs: полосы спектра обрезаны до 20", first && first.bands.length, 2);
+    assertEqual("tabs: источник назван VK Музыка", first && first.app, "VK Музыка");
+    assertEqual("tabs: длительность из вкладки", second && second.dur, 200);
+    assert("tabs: ключ кэша содержит вкладку и трек",
+      first && first.ck === "1|Первый трек|Первый артист", first && first.ck);
+
+    assertEqual("tabs: автовыбор взял играющую вкладку", store.selectedKey, "tab:1");
+
+    // Выбор пользователя переживает следующий опрос.
+    window.__sendMessageImpl = function (tabId) {
+      return Promise.resolve(tabId === 1
+        ? { title: "Первый трек", artist: "Первый артист", playing: false, pos: 31, dur: 0, frac: 0.26 }
+        : { title: "Второй трек", artist: "Второй артист", playing: true, pos: 5, dur: 200, frac: 0.02 });
+    };
+    store.selectedKey = "tab:2";
+    store.userPicked = true;
+    await pollTabs();
+    assert("tabs: выбор пользователя удержан", store.selectedKey === "tab:2",
+      "выбрано " + store.selectedKey +
+      "; источники=" + JSON.stringify(Array.from(store.sources.keys())) +
+      "; элементы=" + JSON.stringify(store.lastItems.map(function (i) { return i.key; })) +
+      "; userPicked=" + store.userPicked);
+
+    // Выбранная вкладка исчезла - автоподбор берёт играющую.
+    window.__tabs = [VK_TABS[1]];
+    await pollTabs();
+    assertEqual("tabs: при исчезновении вкладки выбирается играющая", store.selectedKey, "tab:2");
+    assertEqual("tabs: список источников сжался", store.lastItems.length, 1);
+
+    // Ни одной вкладки VK Музыки.
+    window.__tabs = [VK_TABS[2]];
+    await pollTabs();
+    assertEqual("tabs: без вкладок список пуст", store.lastItems.length, 0);
+    assert("tabs: без вкладок причина ясна",
+      note().indexOf("Откройте вкладку") >= 0, note());
+
+    window.__tabs = [];
+    window.__sendMessageImpl = null;
+
+    // --- page.js: маршрутизация команд -------------------------------------
+
+    window.__tabs = VK_TABS;
+    window.__sendMessageImpl = function (tabId, msg) {
+      return Promise.resolve({ ok: true, msg: tabId + ":" + msg.action });
+    };
+    await pollTabs();
+    // Явно выбираем вторую вкладку: проверка ниже интересует именно
+    // маршрутизацией, а не правилами автоподбора.
+    store.selectedKey = "tab:2";
+    store.userPicked = true;
+
+    window.__sentToHost.length = 0;
+    await host.onCommand({ action: "toggle", key: "tab:2", id: 11 });
+    var sent = window.__sentToHost.find(function (m) { return m.t === "ack"; });
+    assert("page: команда ушла в выбранную вкладку", !!sent && sent.ok === true, JSON.stringify(sent));
+    var routed = window.__calls.filter(function (c) { return c.name === "tabs.sendMessage"; }).pop();
+    assert("page: команда адресована tab:2", routed && routed.args[0] === 2, JSON.stringify(routed));
+    assert("page: команда без доли не передаёт seek", routed && routed.args[1].ratio === null);
+
+    // Команда без указания источника идёт в выбранный.
+    await host.onCommand({ action: "next", id: 12 });
+    routed = window.__calls.filter(function (c) { return c.name === "tabs.sendMessage"; }).pop();
+    assert("page: команда без ключа идёт в выбранный источник", routed && routed.args[0] === 2,
+      JSON.stringify(routed));
+
+    // Перемотка передаёт долю.
+    await host.onCommand({ action: "seek", key: "tab:1", ratio: 0.5, id: 13 });
+    routed = window.__calls.filter(function (c) { return c.name === "tabs.sendMessage"; }).pop();
+    assert("page: доля перемотки доходит до вкладки", routed && routed.args[1].ratio === 0.5);
+
+    // Вкладка не отвечает - команда отклонена, фон не падает.
+    window.__sendMessageImpl = function () { return Promise.reject(new Error("нет получателя")); };
+    window.__sentToHost.length = 0;
+    await host.onCommand({ action: "toggle", key: "tab:1", id: 14 });
+    sent = window.__sentToHost.find(function (m) { return m.t === "ack"; });
+    assert("page: отказ вкладки превращается в ack с ошибкой", !!sent && sent.ok === false,
+      JSON.stringify(sent));
+
+    // Указана вкладка, которой уже нет: команда уходит в выбранную,
+    // потому что вкладка могла закрыться между опросом и нажатием.
+    window.__sendMessageImpl = function () { return Promise.resolve({ ok: true }); };
+    window.__calls.length = 0;
+    await host.onCommand({ action: "toggle", key: "tab:999", id: 17 });
+    routed = window.__calls.filter(function (c) { return c.name === "tabs.sendMessage"; }).pop();
+    assert("page: исчезнувшая вкладка откатывается на выбранную",
+      routed && routed.args[0] === 2, JSON.stringify(routed));
+
+    // Совсем нет вкладок - команда честно отклоняется.
+    window.__tabs = [];
+    await pollTabs();
+    window.__sentToHost.length = 0;
+    await host.onCommand({ action: "toggle", key: "tab:1", id: 18 });
+    sent = window.__sentToHost.find(function (m) { return m.t === "ack"; });
+    assert("page: без вкладок команда отклоняется", !!sent && sent.ok === false,
+      JSON.stringify(sent));
+
+    // Выбор источника пользователем.
+    window.__tabs = VK_TABS;
+    window.__sendMessageImpl = function () { return Promise.resolve({ ok: true }); };
+    await pollTabs();
+    await host.onCommand({ action: "select", key: "tab:1", id: 15 });
+    assertEqual("page: выбор источника запомнен", store.selectedKey, "tab:1");
+    assertEqual("page: выбор помечен как ручной", store.userPicked, true);
+
+    await host.onCommand({ action: "select", key: "tab:777", id: 16 });
+    sent = window.__sentToHost.find(function (m) { return m.t === "ack" && m.id === 16; });
+    assert("page: выбор несуществующего источника отклонён", !!sent && sent.ok === false,
+      JSON.stringify(sent));
+    assertEqual("page: неудачный выбор не сбивает текущий", store.selectedKey, "tab:1");
+
+    // --- page.js: диагностика и снимок --------------------------------------
 
     assert("page: без вкладок виджету объяснено почему", note().length > 0);
-    assert("page: подключение сорвано - причина в note", note().indexOf("Виджет") >= 0, note());
-
-    // Без соединения отправка не должна падать - просто молча отказывает.
-    assertEqual("page: без порта отправка отказывает", sendToHost({ t: "state", items: [] }), false);
 
     // Возвращаем соединение и проверяем снимок. Прежний промис connectNative
 // уже отклонён, поэтому нужен новый вызов connectHost().
@@ -273,14 +450,6 @@ function tick() {
       JSON.stringify(state));
     assert("page: в снимке есть выбранный источник", state !== null && "selected" in state);
     assert("page: в снимке есть диагностика", state !== null && typeof state.note === "string");
-
-    // Команда для несуществующей вкладки должна быть отклонена, а не
-    // уронить фон.
-    window.__sentToHost.length = 0;
-    await host.onCommand({ action: "toggle", key: "tab:999", id: 5 });
-    var ack = window.__sentToHost.find(function (m) { return m.t === "ack"; });
-    assert("page: команда в несуществующую вкладку отклонена", !!ack && ack.ok === false,
-      JSON.stringify(ack));
 
     done();
   } catch (e) {

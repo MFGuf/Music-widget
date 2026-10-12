@@ -21,9 +21,11 @@ JavaScript нечем проверять. Firefox умеет рендерить 
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +37,7 @@ FIREFOX_CANDIDATES = [
     r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
 ]
 TIMEOUT_SECONDS = 90
+REPORT_PATH = ""
 
 
 def free_port():
@@ -92,8 +95,10 @@ def run_suite(firefox, port):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    profile = ROOT / "tools" / ".testprofile"
-    profile.mkdir(parents=True, exist_ok=True)
+    # Профиль - временный и уникальный на каждый запуск. Постоянный
+    # профиль в репозитории после аварийного завершения Firefox остаётся
+    # заблокированным lock-файлом, и следующий запуск молча ничего не делает.
+    profile = Path(tempfile.mkdtemp(prefix="mw-tests-"))
 
     url = f"http://127.0.0.1:{port}/tools/tests/index.html"
     proc = subprocess.Popen(
@@ -118,20 +123,26 @@ def run_suite(firefox, port):
             except Exception:
                 pass
         server.shutdown()
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def report(payload):
+    lines = []
+
+    def say(text=""):
+        lines.append(text)
+
     if not isinstance(payload, dict):
-        print("неожиданный ответ:", payload)
+        say("неожиданный ответ: " + repr(payload))
         return 2
 
     total = 0
     failed = 0
     for suite in payload.get("suites", []):
-        print()
-        print("==", suite.get("name", "?"))
+        say()
+        say("== " + suite.get("name", "?"))
         if suite.get("error"):
-            print("   ОШИБКА НАБОРА:", suite["error"])
+            say("   ОШИБКА НАБОРА: " + suite["error"])
             failed += 1
             continue
         for check in suite.get("checks", []):
@@ -139,17 +150,35 @@ def report(payload):
             mark = "ok  " if check.get("ok") else "FAIL"
             if not check.get("ok"):
                 failed += 1
-            print("  [%s] %s%s" % (
+            say("  [%s] %s%s" % (
                 mark, check.get("name", "?"),
                 "" if check.get("ok") else "  <- " + str(check.get("detail", "")),
             ))
-    print()
-    print("-" * 60)
-    print("проверок: %d, провалено: %d" % (total, failed))
+    say()
+    say("-" * 60)
+    say("проверок: %d, провалено: %d" % (total, failed))
+
+    text = "\n".join(lines)
+
+    # Отчёт всегда пишем в файл: в консоли Windows кириллица часто
+    # превращается в мусор из-за кодовой страницы терминала.
+    if REPORT_PATH:
+        Path(REPORT_PATH).write_text(text, encoding="utf-8")
+        print("отчёт: " + REPORT_PATH)
+    print(text)
     return 1 if failed else 0
 
 
 def main():
+    global REPORT_PATH
+
+    args = sys.argv[1:]
+    if "--report" in args:
+        idx = args.index("--report")
+        REPORT_PATH = args[idx + 1] if idx + 1 < len(args) else "tools/.testreport.txt"
+    else:
+        REPORT_PATH = str(ROOT / "tools" / ".testreport.txt")
+
     firefox = find_firefox()
     if not firefox:
         print("Firefox не найден. Задайте переменную окружения FIREFOX_PATH.")
@@ -158,6 +187,7 @@ def main():
     payload, error = run_suite(firefox, free_port())
     if error:
         print(error)
+        Path(REPORT_PATH).write_text(error, encoding="utf-8")
         return 2
     return report(payload)
 
