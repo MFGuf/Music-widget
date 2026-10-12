@@ -506,10 +506,28 @@
     movingIndex: -1,
   };
 
+  // Элементы управления, которые похожи на шкалу позиции, но ею не являются.
+  const NOT_POSITION = /volume|громкост|mute|muted|seek=|\bzoom\b/i;
+
   function listSliders() {
     const nodes = document.querySelectorAll("[role='slider'],[aria-valuenow],input[type='range']");
     const out = [];
     for (const el of nodes) {
+      const label = (el.getAttribute("aria-label") || "") + " " + classText(el);
+
+      // Громкость часто выглядит ровно так же, как шкала позиции: у
+      // input[type=range] отличается лишь max. Без этой проверки
+      // перемотка уезжала бы в громкость.
+      if (el.tagName === "INPUT" && el.type === "range") {
+        const max = parseFloat(el.max);
+        if (isFinite(max) && max <= 10) {
+          continue;
+        }
+      }
+      if (NOT_POSITION.test(label)) {
+        continue;
+      }
+
       const rect = el.getBoundingClientRect();
       // Широкий и низкий - так выглядит шкала позиции; узкие и круглые
       // элементы - это громкость и прочее.
@@ -523,7 +541,7 @@
       if (!isFinite(value)) {
         value = 0;
       }
-      out.push({ value: value, rect: rect, el: el, label: (el.getAttribute("aria-label") || "") + " " + classText(el) });
+      out.push({ value: value, rect: rect, el: el, label: label });
     }
     return out;
   }
@@ -774,6 +792,121 @@
     return { ok: true, msg: "кнопка: " + buttonMeta(found).slice(0, 60) };
   }
 
+  // --- перемотка -----------------------------------------------------------
+
+  // Firefox не умеет отправлять доверенный ввод (в Chromium это делал
+  // Input.dispatchMouseEvent), поэтому работаем тремя способами по
+  // убыванию надёжности и берём первый сработавший.
+
+  function clampRatio(value) {
+    const n = Number(value);
+    if (!isFinite(n)) {
+      return null;
+    }
+    return n < 0 ? 0 : n > 1 ? 1 : n;
+  }
+
+  // 1. Медиаэлемент с известной длительностью: самый точный способ,
+  //    время выставляется напрямую.
+  function seekViaMedia(ratio) {
+    const media = anyMedia();
+    if (!media) {
+      return null;
+    }
+    const raw = Number(media.duration);
+    if (!isFinite(raw) || raw <= 0) {
+      return null;
+    }
+    // Чуть не до конца: иначе плеер успевает перейти на следующий трек
+    // прямо во время установки времени.
+    const target = Math.max(0, Math.min(raw - 0.5, ratio * raw));
+    try {
+      media.currentTime = target;
+    } catch (e) {
+      return null;
+    }
+    seekHint = target;
+    seekAt = Date.now();
+    return "audio " + Math.round(ratio * 100) + "%";
+  }
+
+  // 2. Настоящий input[type=range] - половина плееров принимает значение
+  //    напрямую, если выставить его и послать input/change.
+  function seekViaRangeInput(ratio) {
+    const inputs = document.querySelectorAll("input[type='range']");
+    for (const el of inputs) {
+      const max = parseFloat(el.max);
+      if (!isFinite(max) || max <= 10) {
+        continue;
+      }
+      const parsedMin = parseFloat(el.min);
+      const min = isFinite(parsedMin) ? parsedMin : 0;
+      const value = min + (max - min) * ratio;
+      el.value = String(value);
+      try {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } catch (e) {
+        continue;
+      }
+      return "range " + Math.round(ratio * 100) + "%";
+    }
+    return null;
+  }
+
+  // 3. Шкала на div: кликаем в нужную точку. VK игнорирует вызовы
+  //    element.click() без координат, поэтому шлём полноценную
+  //    последовательность событий с clientX.
+  function seekViaPointer(ratio) {
+    const slider = pickSlider();
+    if (!slider || !slider.el) {
+      return null;
+    }
+    const rect = slider.rect;
+    const x = rect.left + rect.width * ratio;
+    const y = rect.top + rect.height / 2;
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: x,
+      clientY: y,
+      screenX: window.screenX + x,
+      screenY: window.screenY + y,
+      view: window,
+      button: 0,
+    };
+    const pointer = { pointerId: 1, pointerType: "mouse", isPrimary: true };
+    try {
+      if (typeof window.PointerEvent === "function") {
+        slider.el.dispatchEvent(new PointerEvent("pointerdown", Object.assign({}, base, pointer, { buttons: 1 })));
+      }
+      slider.el.dispatchEvent(new MouseEvent("mousedown", Object.assign({}, base, { buttons: 1 })));
+      if (typeof window.PointerEvent === "function") {
+        slider.el.dispatchEvent(new PointerEvent("pointerup", Object.assign({}, base, pointer, { buttons: 0 })));
+      }
+      slider.el.dispatchEvent(new MouseEvent("mouseup", Object.assign({}, base, { buttons: 0 })));
+      slider.el.dispatchEvent(new MouseEvent("click", Object.assign({}, base, { buttons: 0 })));
+    } catch (e) {
+      return null;
+    }
+    return "slider " + Math.round(ratio * 100) + "%";
+  }
+
+  function commandSeek(ratio) {
+    const value = clampRatio(ratio);
+    if (value === null) {
+      return { ok: false, msg: "не задана доля перемотки" };
+    }
+    const ways = [seekViaMedia(value), seekViaRangeInput(value), seekViaPointer(value)];
+    for (const result of ways) {
+      if (result) {
+        return { ok: true, msg: result };
+      }
+    }
+    return { ok: false, msg: "не нашёл шкалу позиции" };
+  }
+
   function runCommand(action, ratio) {
     switch (action) {
       case "toggle":
@@ -785,8 +918,7 @@
       case "prev":
         return commandSkip(findPrevButton, "предыдущий трек");
       case "seek":
-        // Реализуется в задаче 13.
-        return { ok: false, msg: "команда seek ещё не реализована" };
+        return commandSeek(ratio);
       default:
         return { ok: false, msg: "неизвестная команда: " + action };
     }

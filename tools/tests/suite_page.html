@@ -523,6 +523,100 @@ res = await ask("cmd", { action: "next" });
 assert("page: скрытая кнопка не нажимается",
   !!res && res.ok === false, JSON.stringify(res));
 
+// --- перемотка ----------------------------------------------------------------
+
+// 1. Медиаэлемент с длительностью - точная перемотка.
+var a4 = mockPlayer({ position: 10, duration: 200 });
+res = await ask("cmd", { action: "seek", ratio: 0.5 });
+assert("page: seek сработал через audio",
+  !!res && res.ok === true && res.msg.indexOf("audio") === 0, JSON.stringify(res));
+assert("page: перемотка выставила половину", Math.abs(a4.currentTime - 100) < 0.5,
+  "стало " + a4.currentTime);
+
+// Ближе к концу нельзя: иначе плеер переключится на следующий трек.
+await ask("cmd", { action: "seek", ratio: 1 });
+assert("page: перемотка в самый конец остановлена до конца",
+  a4.currentTime < 200, "стало " + a4.currentTime);
+assert("page: перемотка в конец неотрицательна", a4.currentTime >= 0);
+
+// Доля за пределами 0..1 приводится к границам.
+await ask("cmd", { action: "seek", ratio: 5 });
+assert("page: доля больше 1 обрезается", Math.abs(a4.currentTime - 199.5) < 0.5,
+  "стало " + a4.currentTime);
+await ask("cmd", { action: "seek", ratio: -3 });
+assertEqual("page: отрицательная доля даёт начало", a4.currentTime, 0);
+
+// 2. input[type=range] - значение выставляется и события уходят.
+document.body.innerHTML = [
+  '<div class="track-name"><div class="track-name__title">С ползунком input</div></div>',
+  '<input type="range" id="rng" min="0" max="300" step="1" value="0">',
+].join("");
+window.__rangeEvents = [];
+var rng = document.getElementById("rng");
+for (const type of ["input", "change"]) {
+  rng.addEventListener(type, function () {
+    window.__rangeEvents.push(type + ":" + rng.value);
+  });
+}
+res = await ask("cmd", { action: "seek", ratio: 0.25 });
+assert("page: seek сработал через input[type=range]",
+  !!res && res.ok === true && res.msg.indexOf("range") === 0, JSON.stringify(res));
+assertEqual("page: значение ползунка выставлено", rng.value, "75");
+assert("page: события input и change отправлены",
+  window.__rangeEvents.indexOf("input:75") >= 0 && window.__rangeEvents.indexOf("change:75") >= 0,
+  JSON.stringify(window.__rangeEvents));
+
+// input, у которого max - проценты (max <= 10), шкалой позиции не считается.
+document.body.innerHTML = [
+  '<input type="range" id="vol" min="0" max="10" value="5">',
+].join("");
+res = await ask("cmd", { action: "seek", ratio: 0.5 });
+assert("page: ползунок громкости не перематывает трек",
+  !!res && res.ok === false, JSON.stringify(res));
+
+// 3. Шкала на div - события с координатами в нужной точке.
+document.body.innerHTML = [
+  '<div class="track-name"><div class="track-name__title">Шкала на div</div></div>',
+  '<div id="seekbar" role="slider" aria-valuenow="0" aria-label="позиция воспроизведения" ' +
+  'style="position:absolute;left:100px;top:200px;width:300px;height:6px"></div>',
+].join("");
+window.__seekEvents = [];
+var bar = document.getElementById("seekbar");
+for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+  bar.addEventListener(type, function (ev) {
+    window.__seekEvents.push(type + "@" + Math.round(ev.clientX));
+  });
+}
+res = await ask("cmd", { action: "seek", ratio: 0.5 });
+assert("page: seek сработал кликом по шкале",
+  !!res && res.ok === true && res.msg.indexOf("slider") === 0, JSON.stringify(res));
+assertEqual("page: отправлены все пять событий", window.__seekEvents.length, 5);
+assertEqual("page: события идут в правильном порядке",
+  window.__seekEvents.map(function (s) { return s.split("@")[0]; }).join(","),
+  "pointerdown,mousedown,pointerup,mouseup,click");
+// Левый край шкалы - 100px, ширина 300, половина - 250.
+assertEqual("page: координата клика соответствует доле",
+  window.__seekEvents[window.__seekEvents.length - 1].split("@")[1], "250");
+
+// Доля 0.75 - четверть правее.
+window.__seekEvents = [];
+await ask("cmd", { action: "seek", ratio: 0.75 });
+assertEqual("page: координата клика для доли 0.75",
+  window.__seekEvents[window.__seekEvents.length - 1].split("@")[1], "325");
+
+// Шкалы нет вовсе - честная ошибка.
+document.body.innerHTML = '<div class="track-name"><div class="track-name__title">Без шкалы</div></div>';
+res = await ask("cmd", { action: "seek", ratio: 0.5 });
+assert("page: без шкалы перемотка сообщает об ошибке",
+  !!res && res.ok === false && res.msg.indexOf("не нашёл") === 0, JSON.stringify(res));
+
+res = await ask("cmd", { action: "seek" });
+assert("page: перемотка без доли отклоняется",
+  !!res && res.ok === false && res.msg.indexOf("не задана") === 0, JSON.stringify(res));
+
+res = await ask("cmd", { action: "seek", ratio: "мусор" });
+assert("page: нечисловая доля отклоняется", !!res && res.ok === false, JSON.stringify(res));
+
     done();
   } catch (e) {
     fail("набор page упал", e);
