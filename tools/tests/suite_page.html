@@ -15,9 +15,16 @@
 
 <script>
 // Ставит mock-разметку плеера. Меняется между проверками.
+window.__clicks = [];
+window.__mockPlaying = false;
+
 function mockPlayer(opts) {
   opts = opts || {};
   document.body.innerHTML = "";
+  window.__clicks = [];
+  if (opts.playing !== undefined) {
+    window.__mockPlaying = !!opts.playing;
+  }
 
   const player = document.createElement("div");
   player.className = "player";
@@ -32,12 +39,24 @@ function mockPlayer(opts) {
     '</div></div>',
     '<div class="player__controls">',
     '  <button class="Icon Icon--prev" style="width:40px;height:40px" aria-label="Предыдущий трек"></button>',
-    '  <button class="Icon Icon--play" style="width:40px;height:40px" aria-label="' +
-      (opts.playing ? "Пауза" : "Воспроизвести") + '"></button>',
+    '  <button class="Icon Icon--play" id="mock-play" style="width:40px;height:40px" aria-label="' +
+      (window.__mockPlaying ? "Пауза" : "Воспроизвести") + '"></button>',
     '  <button class="Icon Icon--next" style="width:40px;height:40px" aria-label="Следующий трек"></button>',
     '</div>',
   ].join("\n");
   document.body.appendChild(player);
+
+  // Кнопки отвечают на клики: переключают подпись и пишут себя в журнал,
+  // как настоящий плеер.
+  for (const btn of player.querySelectorAll("button")) {
+    btn.addEventListener("click", function () {
+      window.__clicks.push(btn.getAttribute("aria-label"));
+      if (btn.id === "mock-play") {
+        window.__mockPlaying = !window.__mockPlaying;
+        btn.setAttribute("aria-label", window.__mockPlaying ? "Пауза" : "Воспроизвести");
+      }
+    });
+  }
 
   if (opts.media !== false) {
     const audio = document.createElement("audio");
@@ -368,17 +387,57 @@ mockPlayer({ title: "Кино", artist: "Дельфин", media: false });
 st = await ask("getState", null);
 assert("page: после ошибки скрипт продолжает работать", !!st && typeof st.title === "string");
 
-// --- команды: пока не реализованы ---------------------------------------
+// --- команды: play/pause и stop ---------------------------------------------
 
-    var res = await ask("cmd", { action: "toggle" });
-    assert("page: неизвестная команда не роняет скрипт", !!res && res.ok === false,
-      JSON.stringify(res));
+mockPlayer({ playing: false, media: false });
+st = await ask("getState", null);
+assertEqual("page: перед toggle плеер на паузе", st.playing, false);
 
-    res = await ask("cmd", { action: "ерунда" });
-    assert("page: ерунда отклоняется", !!res && res.ok === false);
+var res = await ask("cmd", { action: "toggle" });
+assert("page: toggle нажал кнопку плеера",
+  !!res && res.ok === true && res.msg.indexOf("кнопка") === 0, JSON.stringify(res));
+assertEqual("page: toggle нажал именно play/pause", window.__clicks.length, 1);
+assertEqual("page: toggle нажал «Воспроизвести»", window.__clicks[0], "Воспроизвести");
 
-    res = await ask("getState", null);
-    assert("page: после команд скрипт жив", !!res && typeof res.title === "string");
+st = await ask("getState", null);
+assertEqual("page: после toggle плеер играет", st.playing, true);
+
+res = await ask("cmd", { action: "toggle" });
+assertEqual("page: второй toggle нажал ту же кнопку", window.__clicks.length, 2);
+assertEqual("page: второй toggle нажал «Пауза»", window.__clicks[1], "Пауза");
+st = await ask("getState", null);
+assertEqual("page: после второго toggle плеер на паузе", st.playing, false);
+
+// Кнопки нет - работаем с медиаэлементом напрямую.
+document.body.innerHTML =
+  '<div class="track-name"><div class="track-name__title">Без кнопок</div></div>';
+var mediaOnly = document.createElement("audio");
+mediaOnly.src = "https://vk.com/only.mp3";
+document.body.appendChild(mediaOnly);
+Object.defineProperty(mediaOnly, "paused", { value: true, configurable: true });
+
+res = await ask("cmd", { action: "toggle" });
+assert("page: без кнопки toggle работает через audio",
+  !!res && res.ok === true && res.msg === "media-play", JSON.stringify(res));
+
+// Ни кнопок, ни медиаэлемента - честная ошибка, а не молчание.
+document.body.innerHTML =
+  '<div class="track-name"><div class="track-name__title">Пусто</div></div>';
+res = await ask("cmd", { action: "toggle" });
+assert("page: без плеера toggle сообщает об ошибке",
+  !!res && res.ok === false && res.msg.indexOf("не нашёл") === 0, JSON.stringify(res));
+
+// stop: пауза и возврат в начало.
+var a3 = mockPlayer({ playing: true, position: 120, duration: 300 });
+res = await ask("cmd", { action: "stop" });
+assert("page: stop отработал", !!res && res.ok === true, JSON.stringify(res));
+assertEqual("page: stop вернул трек в начало", a3.currentTime, 0);
+
+res = await ask("cmd", { action: "ерунда" });
+assert("page: ерунда отклоняется", !!res && res.ok === false);
+
+res = await ask("getState", null);
+assert("page: после команд скрипт жив", !!res && typeof res.title === "string");
 
     done();
   } catch (e) {

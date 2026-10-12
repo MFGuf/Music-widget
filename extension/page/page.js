@@ -635,14 +635,129 @@
 
   // --- команды ----------------------------------------------------------------
 
+  // Кнопки VK не имеют стабильных id, поэтому ищем их по подписям.
+  const BUTTON_SELECTOR = 'button,[role="button"],[data-test-id],[class*="Icon"],[class*="Tappable"]';
+
+  function buttonMeta(el) {
+    return [
+      el.getAttribute("aria-label") || "",
+      el.getAttribute("title") || "",
+      classText(el),
+      el.getAttribute("data-test-id") || "",
+      (el.textContent || "").trim().slice(0, 40),
+    ].join(" | ");
+  }
+
+  function isVisible(el) {
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  }
+
+  // Первая видимая кнопка, чья подпись подходит под pos и не подходит под
+  // bad. Список bad длинный намеренно: у VK рядом с плеером лежат
+  // перемешивание, громкость, лайки и карусели с очень похожими словами.
+  function findButton(pos, bad) {
+    const nodes = document.querySelectorAll(BUTTON_SELECTOR);
+    for (const el of nodes) {
+      if (!isVisible(el)) {
+        continue;
+      }
+      const meta = buttonMeta(el);
+      if (bad.test(meta)) {
+        continue;
+      }
+      if (pos.test(meta)) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  // Общие слова, которые почти всегда означают не то, что нужно.
+  const COMMON_BAD = /shuffle|shuf|repeat|volume|mute|like|favou?rite|share|download|queue|playlist|lyric|expand|more|setting|quality|comment|sponsor|add|remove|delete|open|fullscreen|cast|pip|scroll|carousel|arrow|swiper|slider|dots|navigation/i;
+  const PREV_WORDS = /prev|previous|предыдущ|предыд|назад/i;
+  const NEXT_WORDS = /next|следующ|впер[её]д|вперед/i;
+
+  // Слова проверяем с границами: иначе "play" совпадёт с "playlist",
+  // а "next" - с "nextPage".
+  const RE_TOGGLE = /(^|[\s_-])(play|pause|resume|воспроизвести|воспроизведение|пауза|играть)([\s_-]|$)/i;
+
+  function findToggleButton() {
+    return findButton(RE_TOGGLE, new RegExp(COMMON_BAD.source + "|" + PREV_WORDS.source + "|" + NEXT_WORDS.source, "i"));
+  }
+
+  // Ищем видимый медиаэлемент: на паузе он всё равно подходит.
+  function anyMedia() {
+    const list = mediaElements();
+    return list[0] || null;
+  }
+
+  function toggleViaMedia() {
+    const media = anyMedia();
+    if (!media) {
+      return "нет медиаэлемента";
+    }
+    if (media.paused || media.ended) {
+      const result = media.play();
+      if (result && typeof result.catch === "function") {
+        result.catch(function () {});
+      }
+      return "media-play";
+    }
+    media.pause();
+    return "media-pause";
+  }
+
+  function commandToggle() {
+    const button = findToggleButton();
+    if (button) {
+      button.click();
+      return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
+    }
+    // Кнопки может не быть (плеер свёрнут, вёрстка изменилась) - тогда
+    // управляем медиаэлементом напрямую.
+    const what = toggleViaMedia();
+    return what === "нет медиаэлемента"
+      ? { ok: false, msg: "не нашёл ни кнопку плеера, ни медиаэлемент" }
+      : { ok: true, msg: what };
+  }
+
+  // Полной остановки в HTMLMediaElement нет, поэтому останавливаем так,
+  // как это ожидает пользователь: пауза и возврат в начало.
+  function commandStop() {
+    const media = anyMedia();
+    if (media) {
+      media.pause();
+      try {
+        media.currentTime = 0;
+      } catch (e) {
+        // currentTime может быть недоступен до загрузки метаданных.
+      }
+    }
+    const button = findToggleButton();
+    if (button && (!media || !media.paused)) {
+      // Плеер ещё играет - нажимаем кнопку, чтобы он встал.
+      button.click();
+      return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
+    }
+    return media
+      ? { ok: true, msg: "media-pause + в начало" }
+      : { ok: false, msg: "не нашёл ни кнопку плеера, ни медиаэлемент" };
+  }
+
   function runCommand(action, ratio) {
     switch (action) {
       case "toggle":
+        return commandToggle();
+      case "stop":
+        return commandStop();
       case "next":
       case "prev":
-      case "stop":
       case "seek":
-        // Реализуется в задачах 10-13.
+        // Реализуется в задачах 11-13.
         return { ok: false, msg: "команда " + action + " ещё не реализована" };
       default:
         return { ok: false, msg: "неизвестная команда: " + action };
