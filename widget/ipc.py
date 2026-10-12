@@ -220,7 +220,14 @@ def endpoint_owner_alive(endpoint: dict) -> bool:
 
 
 def connect_to_widget(timeout: float = 1.0) -> socket.socket | None:
-    """Подключается к виджету. None, если он не запущен или не отвечает."""
+    """Подключается к виджету. None, если он не запущен или не отвечает.
+
+    Возвращённый сокет переводится в блокирующий режим. Это важно:
+    таймаут, заданный create_connection, остаётся на самом сокете и
+    наследуется файловыми объектами makefile. Оставив его, мы получили бы
+    обрыв соединения через полсекунды молчания - как раз того случая, когда
+    виджет просто ничего не шлёт.
+    """
     endpoint = read_endpoint()
     if not endpoint:
         return None
@@ -231,4 +238,5 @@ def connect_to_widget(timeout: float = 1.0) -> socket.socket | None:
         sock = socket.create_connection((HOST, endpoint["port"]), timeout=timeout)
     except OSError:
         return None
+    sock.settimeout(None)
     return sock

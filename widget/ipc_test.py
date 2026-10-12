@@ -247,12 +247,30 @@ def test_connect_without_widget(tmp: Path):
                     ipc.connect_to_widget(timeout=0.3), None)
         check_equal("файл мёртвого владельца убран", ipc.read_endpoint(), None)
 
-        # Живой владелец, но порт свободен: connect обязан молча вернуть None.
+# Живой владелец, но порт свободен: connect обязан молча вернуть None.
         ipc.write_endpoint(closed_port, "токен")
         result = ipc.connect_to_widget(timeout=0.3)
         check_equal("свободный порт даёт None, а не исключение", result, None)
         if result is not None:
             result.close()
+
+        # Подключённый сокет обязан быть блокирующим: иначе таймаут
+        # подключения пережил бы соединение и рвал бы его в молчании.
+        probe = socket.socket()
+        probe.bind((ipc.HOST, 0))
+        free_port = probe.getsockname()[1]
+        probe.close()
+        listener = socket.socket()
+        listener.bind((ipc.HOST, free_port))
+        listener.listen(1)
+        ipc.write_endpoint(free_port, "токен")
+        sock = ipc.connect_to_widget(timeout=0.3)
+        check("к серверу удалось подключиться", sock is not None)
+        if sock is not None:
+            check_equal("сокет передан в блокирующем режиме",
+                        sock.gettimeout(), None)
+            sock.close()
+        listener.close()
     finally:
         ipc.ENDPOINT_FILE, ipc.APP_DIR = saved_file, saved_dir
 
