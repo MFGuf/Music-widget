@@ -359,6 +359,26 @@ function tick() {
     assert("tabs: без вкладок причина ясна",
       note().indexOf("Откройте вкладку") >= 0, note());
 
+    // Вкладки опрашиваются параллельно. Нужны ДВЕ медленные вкладки: при
+    // последовательном обходе опрос занял бы 500 мс вместо 250 мс.
+    window.__tabs = [VK_TABS[0], VK_TABS[1]];
+    window.__sendMessageImpl = function (tabId) {
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          resolve({
+            title: tabId === 1 ? "Первая" : "Вторая",
+            artist: "Вкладка", playing: false, pos: 0, dur: 0, frac: 0,
+          });
+        }, 250);
+      });
+    };
+    var startedAt = Date.now();
+    await pollTabs();
+    var elapsed = Date.now() - startedAt;
+    assert("page: вкладки опрашиваются параллельно", elapsed < 400,
+      "опрос занял " + elapsed + " мс; по очереди было бы около 500");
+    assertEqual("tabs: обе вкладки попали в список", store.lastItems.length, 2);
+
     window.__tabs = [];
     window.__sendMessageImpl = null;
 

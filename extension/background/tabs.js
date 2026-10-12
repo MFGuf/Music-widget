@@ -62,8 +62,16 @@ async function refreshSources() {
     });
   }
 
+  // Опрашиваем вкладки параллельно, а не по очереди. У не отвечающей
+  // вкладки запрос висит до REQUEST_TIMEOUT_MS в content script, и при
+  // последовательном обходе четыре вкладки растянули бы опрос на шесть
+  // секунд вместо семисот миллисекунд - интервал тогда бессмыслен.
+  const states = await Promise.all(
+    Array.from(next.keys()).map((tabId) => requestState(tabId))
+  );
+  let index = 0;
   for (const source of next.values()) {
-    source.state = await requestState(source.tabId);
+    source.state = states[index++];
     source.ready = !!source.state;
   }
 
@@ -77,7 +85,7 @@ async function requestState(tabId) {
   } catch (e) {
     // Самая частая причина: content script в этой вкладке ещё не создан -
     // страница была открыта до установки расширения или после его
-    // обновления. Лечится дозapуском скрипта, см. injectIntoOpenTabs().
+    // обновления. Лечится дозапуском скрипта, см. injectIntoOpenTabs().
     return null;
   }
 }

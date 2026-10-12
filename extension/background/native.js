@@ -104,9 +104,17 @@ function onHostMessage(msg) {
     return;
   }
   switch (msg.t) {
-    case "cmd":
-      host.onCommand?.(msg);
+    case "cmd": {
+      // Обработчик асинхронный: без catch отказ внутри него всплыл бы
+      // необработанным обещанием и в консоли выглядел бы загадочно.
+      const result = host.onCommand?.(msg);
+      if (result && typeof result.then === "function") {
+        result.catch((e) => {
+          log("команда", msg.action, "упала:", (e && e.message) || e);
+        });
+      }
       break;
+    }
     case "ping":
       sendToHost({ t: "pong", v: PROTOCOL_VERSION });
       break;
