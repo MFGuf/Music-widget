@@ -13,9 +13,10 @@ dist/
 # Логи и временное
 *.log
 tools/_manifest_version.txt
-# Отчёт прогона тестов и профиль Firefox, который создаёт run_tests.py
+# Отчёты прогонов и профиль Firefox, который создаёт run_tests.py
 tools/.testprofile/
 tools/.testreport.txt
+tools/.extensioncheck.txt
 
 # IDE
 .vs/
