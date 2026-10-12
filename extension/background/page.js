@@ -10,7 +10,10 @@
 //   4. отправляем виджету снимок и выполняем его команды.
 //
 // Модули подключены в page.html в порядке:
-//   protocol -> store -> native -> tabs -> api -> art -> page
+//   protocol -> store -> native -> tabs -> art -> page
+//
+// Длительность и обложка трека приезжают уже разобранными: page/page.js
+// перехватывает ответы VK API прямо в странице и отдаёт готовые поля.
 
 // Почему виджету не отправляется снимок при каждом событии вкладки:
 // состояние всегда нормализуется в rebuildItems(), а виджет сам решает,
@@ -132,7 +135,6 @@ browser.runtime.onStartup.addListener(() => start());
 function start() {
   startHost();
   startTabPolling();
-  startApiSniffing();
   browser.tabs.onUpdated.addListener(onTabUpdated);
   browser.tabs.onRemoved.addListener(onTabRemoved);
   injectIntoOpenTabs().then(() => pollTabs());

@@ -83,7 +83,180 @@
     playback.hooked = true;
   }
 
-  hookMediaPrototypes();
+  // Хуки ставятся в самом конце файла: состояние, к которому они обращаются,
+// объявлено через const/let выше, и обращение выше объявления дало бы
+// ReferenceError. Для document_start это не страшно - весь скрипт
+// выполняется синхронно до любого кода страницы.
+
+  // --- перехват ответов VK API -----------------------------------------------
+
+  // В DOM у VK Музыки длительности трека нет вообще, а navigator.mediaSession
+  // в Firefox отсутствует. Точное значение лежит в ответе API, который
+  // плеер запрашивает при смене трека, поэтому перехватываем fetch и XHR.
+  //
+  // Перехват сделан здесь, а не через webRequest расширения: скрипт и так
+  // живёт в главном мире страницы до загрузки её собственных скриптов,
+  // поэтому ловит запросы гарантированно и не требует лишних прав.
+  const apiMeta = new Map();
+  let apiHooked = false;
+
+  // Ответы больших плейлистов весят мегабайты - такие разбирать незачем.
+  const MAX_API_TEXT = 4 * 1024 * 1024;
+
+  function metaKey(artist, title) {
+    return String(artist || "").trim().toLowerCase() + "\u0000" +
+           String(title || "").trim().toLowerCase();
+  }
+
+  function pickCoverUrl(node) {
+    const fields = [
+      "thumb_src", "thumb", "thumb_200", "thumb_100",
+      "cover", "album_thumb", "artist_photo",
+    ];
+    for (const field of fields) {
+      const value = node[field];
+      if (typeof value === "string" && value.indexOf("http") === 0) {
+        return value;
+      }
+    }
+    return "";
+  }
+
+  function rememberTrack(artist, title, dur, coverUrl) {
+    if (!title || !isFinite(dur) || dur <= 0) {
+      return;
+    }
+    const key = metaKey(artist, title);
+    const previous = apiMeta.get(key);
+    // Один и тот же трек встречается в плейлисте десятки раз; переписываем
+    // запись, только если данные изменились, иначе карта растёт без нужды.
+    if (previous && previous.dur === dur && previous.coverUrl === coverUrl) {
+      return;
+    }
+    if (apiMeta.size > 200) {
+      const oldest = apiMeta.keys().next();
+      if (!oldest.done) {
+        apiMeta.delete(oldest.value);
+      }
+    }
+    apiMeta.set(key, { dur: dur, coverUrl: coverUrl || (previous ? previous.coverUrl : "") });
+  }
+
+  // Ответы VK бывают вложенными (execute.multiple), поэтому обходим дерево.
+  function absorbApiJson(node, depth) {
+    if (!node || typeof node !== "object" || depth > 8) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        absorbApiJson(item, depth + 1);
+      }
+      return;
+    }
+    const title = typeof node.title === "string" ? node.title : "";
+    const artist = typeof node.artist === "string" ? node.artist : "";
+    const dur = Number(node.duration);
+    if (title && isFinite(dur) && dur > 0) {
+      rememberTrack(artist, title, dur, pickCoverUrl(node));
+    }
+    for (const key of Object.keys(node)) {
+      absorbApiJson(node[key], depth + 1);
+    }
+  }
+
+  function absorbApiText(text) {
+    if (!text || text.length > MAX_API_TEXT) {
+      return;
+    }
+    // Дешёвый отсев: почти все ответы VK не содержат длительностей.
+    if (text.indexOf("\"duration\"") < 0) {
+      return;
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      return;
+    }
+    absorbApiJson(json, 0);
+  }
+
+  function looksLikeApi(url) {
+    return /(^|\/\/)api\.vk\.(com|ru)\/method\//i.test(String(url || ""));
+  }
+
+  function requestUrl(input) {
+    try {
+      if (typeof input === "string") {
+        return input;
+      }
+      if (input && typeof input.url === "string") {
+        return input.url;
+      }
+      return String(input);
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function hookNetwork() {
+    if (apiHooked) {
+      return;
+    }
+    apiHooked = true;
+
+    const origFetch = window.fetch;
+    if (typeof origFetch === "function") {
+      window.fetch = function () {
+        const args = arguments;
+        const url = requestUrl(args[0]);
+        if (!looksLikeApi(url)) {
+          return origFetch.apply(this, args);
+        }
+        return origFetch.apply(this, args).then(function (response) {
+          try {
+            // Клонируем ДО чтения: оригинал должен остаться нетронутым
+            // для самой страницы.
+            const copy = response.clone();
+            copy.text().then(absorbApiText, function () {});
+          } catch (e) {
+            // Тело уже прочитано страницей - просто пропускаем.
+          }
+          return response;
+        });
+      };
+    }
+
+    const XHRProto = window.XMLHttpRequest && XMLHttpRequest.prototype;
+    if (XHRProto) {
+      const origOpen = XHRProto.open;
+      const origSend = XHRProto.send;
+      XHRProto.open = function (method, url) {
+        this.__mwUrl = String(url || "");
+        return origOpen.apply(this, arguments);
+      };
+      XHRProto.send = function () {
+        const self = this;
+        if (looksLikeApi(self.__mwUrl)) {
+          self.addEventListener("load", function () {
+            try {
+              if (self.responseType === "" || self.responseType === "text") {
+                absorbApiText(self.responseText);
+              }
+            } catch (e) {
+              // responseText недоступен для не-текстовых ответов.
+            }
+          });
+        }
+        return origSend.apply(this, arguments);
+      };
+    }
+  }
+
+  function durationFor(artist, title) {
+    const found = apiMeta.get(metaKey(artist, title));
+    return found ? found : null;
+  }
 
   // --- поиск элементов плеера ------------------------------------------------
 
@@ -421,18 +594,38 @@
     const playing = detectPlaying(media);
     const trackKey = text.title + "|" + text.artist;
     const where = readPosition(media, playing, trackKey, Date.now());
+    const api = durationFor(text.artist, text.title);
+
+    // Приоритет длительности: media.duration (точные часы плеера), затем
+    // ответ API. Если ничего точного нет - не показываем ничего, оценка по
+    // скорости ползунка в свёрнутой вкладке в разы завышает результат.
+    let dur = where.dur;
+    let durExact = where.durExact;
+    if (!durExact && api && api.dur > 0) {
+      dur = api.dur;
+      durExact = true;
+    }
+
+    // Без медиаэлемента позиция идёт по часам; если длительность известна
+    // точно, доля даёт гораздо лучшую оценку.
+    let pos = where.pos;
+    if (durExact && !media && where.frac > 0) {
+      pos = where.frac * dur;
+    }
+
+    const coverUrl = readCoverUrl() || (api ? api.coverUrl : "");
 
     return {
       title: text.title,
       artist: text.artist,
-      coverUrl: readCoverUrl(),
+      coverUrl: coverUrl,
       playing: playing,
       hasMedia: !!media || playback.playing || playback.playCount > 0,
       hasPlayButton: !!playButtonState(),
       url: location.href,
-      pos: where.pos,
-      dur: where.dur,
-      durExact: where.durExact,
+      pos: pos,
+      dur: dur,
+      durExact: durExact,
       frac: where.frac,
       bands: [],
       seekHint: seekHint,
@@ -457,6 +650,11 @@
   }
 
   // --- обмен сообщениями ------------------------------------------------------
+
+  // Оба хука - до подписки на сообщения: скрипт готов принимать запросы
+  // сразу, как только о нём узнает content script.
+  hookMediaPrototypes();
+  hookNetwork();
 
   function reply(id, payload) {
     if (token === null) {

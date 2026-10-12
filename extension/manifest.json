@@ -17,8 +17,6 @@
     "tabs",
     "storage",
     "nativeMessaging",
-    "webRequest",
-    "webRequestBlocking",
     "<all_urls>"
   ],
 

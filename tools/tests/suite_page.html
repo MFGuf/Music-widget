@@ -22,7 +22,9 @@ function mockPlayer(opts) {
   const player = document.createElement("div");
   player.className = "player";
   player.innerHTML = [
-    '<div class="player__cover"><img class="cover__img" src="https://sun1-96.userapi.com/caption.jpg?cover"></div>',
+    '<div class="player__cover">' +
+      (opts.noCover ? "" : '<img class="cover__img" src="https://sun1-96.userapi.com/caption.jpg?cover">') +
+    '</div>',
     '<div class="track-name"><div class="track-name__title">' +
       (opts.title == null ? "Тестовый трек" : opts.title) +
     '</div><div class="track-name__art">' +
@@ -55,6 +57,32 @@ function mockPlayer(opts) {
   }
   return null;
 }
+
+// Мок сети ставится ДО загрузки page.js: скрипт захватывает исходный
+// fetch в момент загрузки, поэтому подмена после ни на что не влияет.
+function makeFakeResponse(payload) {
+  return {
+    clone: function () {
+      return { text: function () { return Promise.resolve(JSON.stringify(payload)); } };
+    },
+    text: function () { return Promise.resolve(JSON.stringify(payload)); },
+  };
+}
+
+window.__origFetch = window.fetch;
+window.__origXhrOpen = window.XMLHttpRequest.prototype.open;
+window.__fetchCalls = [];
+window.__fetchPayload = { response: { items: [] } };
+window.__fetchBroken = false;
+window.__responseConsumed = false;
+
+window.fetch = function (input) {
+  window.__fetchCalls.push(String(input && input.url ? input.url : input));
+  if (window.__fetchBroken) {
+    return Promise.reject(new Error("сеть недоступна"));
+  }
+  return Promise.resolve(makeFakeResponse(window.__fetchPayload));
+};
 
 // Обёртка: отправляет сообщение скрипту главного мира, как это делает
 // content script, и ждёт ответ.
@@ -253,7 +281,94 @@ window.__token = "тестовый-токен";
     st = await ask("getState", null);
     assertEqual("page: узкий слайдер громкости проигнорирован", st.frac, 0);
 
-    // --- команды: пока не реализованы ---------------------------------------
+    // --- перехват ответов VK API ------------------------------------------------
+
+// VK вызывает перехваченный fetch, а не исходный: проверяем именно хук.
+var hooked = window.fetch;
+assert("page: fetch перехвачен", hooked !== window.__origFetch);
+assert("page: XHR.open перехвачен",
+  window.XMLHttpRequest.prototype.open !== window.__origXhrOpen);
+
+function apiCall(url, payload) {
+  window.__fetchPayload = payload || { response: { items: [] } };
+  window.__fetchCalls.length = 0;
+  return window.fetch(url).then(function () {
+    return new Promise(function (r) { setTimeout(r, 30); });
+  });
+}
+
+var apiPayload = {
+  response: {
+    items: [
+      { id: 1, title: "Кино", artist: "Дельфин", duration: 245,
+        thumb_src: "https://sun1-96.userapi.com/c1.jpg" },
+      { id: 2, title: "Без обложки", artist: "Кто-то", duration: 180 },
+    ],
+  },
+};
+
+await apiCall("https://api.vk.com/method/audio.get?act=one", apiPayload);
+assertEqual("page: запрос к VK API дошёл до страницы", window.__fetchCalls.length, 1);
+
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: длительность взята из ответа API", st.dur, 245);
+assertEqual("page: длительность из API помечена точной", st.durExact, true);
+
+// Без обложки в DOM её берём из ответа API.
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: обложка из API используется, если в DOM её нет", st.coverUrl,
+  "https://sun1-96.userapi.com/c1.jpg");
+
+// Обложка из DOM важнее: она точно соответствует тому, что на экране.
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false });
+st = await ask("getState", null);
+assert("page: обложка из DOM приоритетнее",
+  st.coverUrl.indexOf("caption.jpg") > 0, st.coverUrl);
+
+// Тот же ответ по не-API адресу ничего не даёт.
+await apiCall("https://api.vk.com/method/audio.get", { response: { items: [] } });
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: пустой ответ не стирает ранее узнанный трек", st.dur, 245);
+assertEqual("page: обложка из API переживает пустой ответ", st.coverUrl,
+  "https://sun1-96.userapi.com/c1.jpg");
+
+// Ответ без "duration" разбирается вхолостую и ничего не портит.
+await apiCall("https://api.vk.com/method/friends.get", { response: { count: 5 } });
+mockPlayer({ title: "Нет данных", artist: "Никто", media: false });
+st = await ask("getState", null);
+assertEqual("page: неизвестный трек остаётся без длительности", st.dur, 0);
+assertEqual("page: неизвестный трек не считается точным", st.durExact, false);
+
+// Вложенный ответ execute.multiple разбирается так же.
+await apiCall("https://api.vk.com/method/execute.multiple", {
+  response: {
+    "audio.get": { response: { items: [
+      { title: "Вложенный", artist: "Группа", duration: 301 },
+    ] } },
+  },
+});
+mockPlayer({ title: "Вложенный", artist: "Группа", media: false });
+st = await ask("getState", null);
+assertEqual("page: вложенный ответ execute.multiple разобран", st.dur, 301);
+
+// Провал запроса не должен ломать страницу.
+window.__fetchBroken = true;
+var rejected = false;
+try {
+  await window.fetch("https://api.vk.com/method/audio.get");
+} catch (e) {
+  rejected = true;
+}
+window.__fetchBroken = false;
+assert("page: ошибка сети доходит до вызывающего", rejected === true);
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false });
+st = await ask("getState", null);
+assert("page: после ошибки скрипт продолжает работать", !!st && typeof st.title === "string");
+
+// --- команды: пока не реализованы ---------------------------------------
 
     var res = await ask("cmd", { action: "toggle" });
     assert("page: неизвестная команда не роняет скрипт", !!res && res.ok === false,

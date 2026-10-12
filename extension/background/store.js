@@ -20,9 +20,4 @@ const store = {
 
   // Последний снимок для виджета.
   lastItems: [],
-
-  // Что известно о треках из перехваченных ответов VK API:
-  // cacheKey -> { title, artist, dur, artUrl, durExact }
-  // Заполняет api.js, читают tabs.js и art.js.
-  trackMeta: new Map(),
 };
