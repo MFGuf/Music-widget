@@ -33,6 +33,7 @@ window.browser = {
     },
     onInstalled: { addListener: function (f) { window.__listeners.installed = f; } },
     onStartup: { addListener: function (f) { window.__listeners.startup = f; } },
+    onMessage: { addListener: function (f) { window.__listeners.runtimeMessage = f; } },
     getURL: function (p) { return "moz-extension://music-widget-test/" + p; },
     getManifest: function () { return { version: "0.1.0" }; },
   },

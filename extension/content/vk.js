@@ -3,21 +3,138 @@
 // Content script: работает в изолированном мире, видит DOM страницы VK,
 // но не имеет доступа к JS-переменным самой страницы.
 //
-// Схема обмена на будущее:
-//   background <-> этот скрипт          через browser.runtime.sendMessage
-//   этот скрипт <-> page/page.js        через window.postMessage
+// Схема обмена:
+//   background/page.js  <-> этот скрипт      через browser.runtime.sendMessage
+//   этот скрипт        <-> page/page.js      через window.postMessage
 //
 // page/page.js внедряется в ГЛАВНЫЙ мир страницы (main world), потому что
 // Firefox не даёт расширению доступа к JS-объектам страницы напрямую,
 // а хуки HTMLMediaElement и AudioContext должны быть поставлены ДО того,
 // как плеер VK их создаст.
-//
-// Чтение состояния плеера добавляется следующим коммитом.
 
-const CHANNEL = "__music_widget__";
+const MSG_VERSION = 1;
 
-// Скрипт главного мира пока не внедряется: задача 4 создаёт только
-// загружаемую оболочку расширения.
+// Скрипт главного мира может не ответить: он не загрузился, страница
+// зависла на перерисовке или сообщение потерялось. Тогда не блокируем фон,
+// а возвращаем пустой ответ - виджет сам разберётся.
+const REQUEST_TIMEOUT_MS = 1500;
+
+// Токен защищает обмен от сообщений чужих скриптов страницы: никто, кроме
+// нас, о нём не знает, а скрипт главного мира принимает только сообщения
+// с правильным токеном.
+const TOKEN = randomToken();
+
+// Ожидающие ответы: id -> { resolve, timer }
+const pending = new Map();
+let nextId = 1;
+
+// Помечает, что скрипт уже внедрён в эту страницу. Атрибут виден из любого
+// мира страницы, поэтому повторная вставка (например, из injectIntoOpenTabs)
+// безопасно откажется.
+const GUARD_ATTR = "data-music-widget-content";
+
+function randomToken() {
+  const bytes = new Uint8Array(16);
+  (window.crypto || window.msCrypto).getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// --- внедрение скрипта главного мира -----------------------------------------
+
 function injectPageScript() {
-  // заглушка
+  const root = document.head || document.documentElement;
+  if (!root) {
+    // Совсем ранний document_start:<head> ещё не создан. Повторяем попытку.
+    document.addEventListener("DOMContentLoaded", injectPageScript, { once: true });
+    return;
+  }
+  const script = document.createElement("script");
+  script.src = browser.runtime.getURL("page/page.js");
+  // Страница не должна знать, откуда пришёл скрипт, а главный мир он
+  // запускает только будучи добавленным в DOM.
+  script.async = false;
+  script.addEventListener("load", () => script.remove());
+  root.appendChild(script);
+}
+
+function start() {
+  document.documentElement.setAttribute(GUARD_ATTR, "1");
+  injectPageScript();
+  browser.runtime.onMessage.addListener(onRuntimeMessage);
+  initPageScript();
+}
+
+// Страница VK - SPA: при переходе между треками документ не перезагружается,
+// но скрипт главного мира остаётся жить. Переустанавливать его не нужно.
+
+// --- обмен со скриптом главного мира -----------------------------------------
+
+function postToPage(type, payload) {
+  return new Promise((resolve) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve(null);
+    }, REQUEST_TIMEOUT_MS);
+    pending.set(id, { resolve, timer });
+    try {
+      window.postMessage(
+        { __mw: MSG_VERSION, dir: "toPage", id, token: TOKEN, t: type, ...payload },
+        "*"
+      );
+    } catch (e) {
+      clearTimeout(timer);
+      pending.delete(id);
+      resolve(null);
+    }
+  });
+}
+
+window.addEventListener("message", (ev) => {
+  if (ev.source !== window) {
+    return;
+  }
+  const data = ev.data;
+  if (!data || data.__mw !== MSG_VERSION || data.dir !== "toContent") {
+    return;
+  }
+  if (data.token !== TOKEN) {
+    return;
+  }
+  const waiter = pending.get(data.id);
+  if (!waiter) {
+    return;
+  }
+  pending.delete(data.id);
+  clearTimeout(waiter.timer);
+  waiter.resolve(data.payload);
+});
+
+// Скрипт главного мира подтверждает, что он загрузился и слушает сообщения.
+async function initPageScript() {
+  const ready = await postToPage("init", {});
+  if (ready) {
+    browser.runtime.sendMessage({ t: "pageReady" }).catch(() => {});
+  }
+}
+
+// --- обмен с фоновой страницей ----------------------------------------------
+
+function onRuntimeMessage(msg) {
+  if (!msg || !msg.t) {
+    return;
+  }
+  if (msg.t === "poll") {
+    return postToPage("getState", {});
+  }
+  if (msg.t === "cmd") {
+    return postToPage("cmd", { action: msg.action, ratio: msg.ratio });
+  }
+  return undefined;
+}
+
+// Повторная вставка скрипта (обновление расширения, injectIntoOpenTabs)
+// не должна заводить вторую копию обработчиков.
+if (!document.documentElement.hasAttribute(GUARD_ATTR)) {
+  start();
 }

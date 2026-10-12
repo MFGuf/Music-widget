@@ -2,24 +2,198 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>suite: page (main world)</title>
+  <title>Название — Исполнитель | VK Музыка</title>
 </head>
 <body>
+
+<!--
+  Набор проверок скрипта главного мира (extension/page/page.js) на
+  разметке, похожей на VK Музыку. Разметка меняется, поэтому проверки
+  бьют по тем селекторам и подписям, на которые опирается page.js.
+-->
 <script src="/tools/tests/suite_common.js"></script>
 
 <script>
-// Заглушка набора: настоящие проверки главного мира страницы появятся
-// вместе с page/page.js (задача 7).
+// Ставит mock-разметку плеера. Меняется между проверками.
+function mockPlayer(opts) {
+  opts = opts || {};
+  document.body.innerHTML = "";
+
+  const player = document.createElement("div");
+  player.className = "player";
+  player.innerHTML = [
+    '<div class="player__cover"><img class="cover__img" src="https://sun1-96.userapi.com/caption.jpg?cover"></div>',
+    '<div class="track-name"><div class="track-name__title">' +
+      (opts.title == null ? "Тестовый трек" : opts.title) +
+    '</div><div class="track-name__art">' +
+      (opts.artist == null ? "Тестовый артист" : opts.artist) +
+    '</div></div>',
+    '<div class="player__controls">',
+    '  <button class="Icon Icon--prev" style="width:40px;height:40px" aria-label="Предыдущий трек"></button>',
+    '  <button class="Icon Icon--play" style="width:40px;height:40px" aria-label="' +
+      (opts.playing ? "Пауза" : "Воспроизвести") + '"></button>',
+    '  <button class="Icon Icon--next" style="width:40px;height:40px" aria-label="Следующий трек"></button>',
+    '</div>',
+  ].join("\n");
+  document.body.appendChild(player);
+
+  if (opts.media !== false) {
+    const audio = document.createElement("audio");
+    audio.id = "vk-audio";
+    audio.src = "https://vk.com/track.mp3";
+    document.body.appendChild(audio);
+    if (opts.duration != null) {
+      Object.defineProperty(audio, "duration", { value: opts.duration, configurable: true });
+    }
+    if (opts.position != null) {
+      audio.currentTime = opts.position;
+    }
+    if (opts.paused != null) {
+      Object.defineProperty(audio, "paused", { value: opts.paused, configurable: true });
+    }
+    return audio;
+  }
+  return null;
+}
+
+// Обёртка: отправляет сообщение скрипту главного мира, как это делает
+// content script, и ждёт ответ.
+function ask(type, payload) {
+  return new Promise(function (resolve) {
+    var id = ask.nextId++;
+    var timer = setTimeout(function () { resolve(null); }, 1000);
+    function onMessage(ev) {
+      var d = ev.data;
+      if (!d || d.__mw !== 1 || d.dir !== "toContent" || d.id !== id) {
+        return;
+      }
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      resolve(d.payload);
+    }
+    window.addEventListener("message", onMessage);
+    var msg = { __mw: 1, dir: "toPage", id: id, token: window.__token, t: type };
+    if (payload) {
+      msg.action = payload.action;
+      msg.ratio = payload.ratio;
+    }
+    window.postMessage(msg, "*");
+  });
+}
+ask.nextId = 5000;
 </script>
 
+<!-- Скрипт главного мира подключается первым делом, как и на реальной
+     странице, где он внедряется на document_start. -->
 <script>
-try {
-  assertEqual("page: документ доступен", typeof document, "object");
-  done();
-} catch (e) {
-  fail("набор page упал", e);
-  doneError(e);
-}
+window.__token = "тестовый-токен";
+// Отвечаем на init раньше самого скрипта нельзя - init обрабатывает он сам.
+</script>
+<script src="/extension/page/page.js"></script>
+
+<script>
+"use strict";
+
+// Скрипт ждёт init, чтобы узнать токен. Инициализируем его так же, как это
+// делает content script.
+(async function () {
+  try {
+    var ready = await ask("init", null);
+    assert("page: скрипт главного мира отвечает на init", !!ready && ready.ready === true,
+      JSON.stringify(ready));
+
+    // Сообщения с чужим токеном игнорируются.
+    var before = await ask("getState", null);
+    assert("page: состояние читается", !!before && typeof before.title === "string",
+      JSON.stringify(before));
+
+    // --- разбор разметки VK Музыки ---------------------------------------
+
+    mockPlayer({ title: "Кино", artist: "Дельфин" });
+    var st = await ask("getState", null);
+    assertEqual("page: название взято из track-name__title", st.title, "Кино");
+    assertEqual("page: исполнитель взят из track-name__art", st.artist, "Дельфин");
+    assertEqual("page: обложка взята из player__cover img", st.coverUrl,
+      "https://sun1-96.userapi.com/caption.jpg?cover");
+    assertEqual("page: адрес страницы", st.url, location.href);
+
+    // Название, которого нет в DOM, берётся из заголовка вкладки.
+    mockPlayer({ title: "", artist: "Кто-то" });
+    st = await ask("getState", null);
+    assertEqual("page: без названия в DOM берётся заголовок вкладки", st.title, "Название");
+
+    // --- признак воспроизведения -----------------------------------------
+
+    mockPlayer({ playing: true });
+    st = await ask("getState", null);
+    assertEqual("page: кнопка «Пауза» означает, что играет", st.playing, true);
+
+    mockPlayer({ playing: false });
+    st = await ask("getState", null);
+    assertEqual("page: кнопка «Воспроизвести» означает паузу", st.playing, false);
+
+    // Если кнопки нет, решение принимает медиаэлемент.
+    document.body.innerHTML = '<div class="track-name"><div class="track-name__title">Без кнопки</div></div>';
+    var audio = document.createElement("audio");
+    audio.src = "https://vk.com/track.mp3";
+    Object.defineProperty(audio, "paused", { value: false, configurable: true });
+    Object.defineProperty(audio, "ended", { value: false, configurable: true });
+    Object.defineProperty(audio, "readyState", { value: 4, configurable: true });
+    document.body.appendChild(audio);
+    st = await ask("getState", null);
+    assertEqual("page: без кнопки состояние берётся из audio", st.playing, true);
+    assertEqual("page: название без плеера тоже читается", st.title, "Без кнопки");
+
+    // --- перехват play()/pause() ------------------------------------------
+
+    mockPlayer({ media: false });
+    var el = document.createElement("audio");
+    el.src = "https://vk.com/x.mp3";
+    document.body.appendChild(el);
+    var seen = await ask("getState", null);
+    assertEqual("page: без медиа пока не играет", seen.playing, false);
+
+    await el.play().catch(function () {});
+    seen = await ask("getState", null);
+    assert("page: play() перехвачен", seen.hasMedia === true, JSON.stringify(seen));
+
+    // --- защита от чужих сообщений -----------------------------------------
+
+    var foreign = new Promise(function (resolve) {
+      var timer = setTimeout(function () { resolve(null); }, 600);
+      window.addEventListener("message", function on(ev) {
+        var d = ev.data;
+        if (d && d.__mw === 1 && d.dir === "toContent" && d.id === 4242) {
+          clearTimeout(timer);
+          window.removeEventListener("message", on);
+          resolve(d);
+        }
+      });
+    });
+    // Тот же запрос, но с чужим токеном.
+    window.postMessage({ __mw: 1, dir: "toPage", id: 4242, token: "чужой", t: "getState" }, "*");
+    var leaked = await foreign;
+    assert("page: сообщение с чужим токеном не получает ответа", leaked === null,
+      JSON.stringify(leaked));
+
+    // --- команды: пока не реализованы ---------------------------------------
+
+    var res = await ask("cmd", { action: "toggle" });
+    assert("page: неизвестная команда не роняет скрипт", !!res && res.ok === false,
+      JSON.stringify(res));
+
+    res = await ask("cmd", { action: "ерунда" });
+    assert("page: ерунда отклоняется", !!res && res.ok === false);
+
+    res = await ask("getState", null);
+    assert("page: после команд скрипт жив", !!res && typeof res.title === "string");
+
+    done();
+  } catch (e) {
+    fail("набор page упал", e);
+    doneError(e);
+  }
+})();
 </script>
 </body>
 </html>

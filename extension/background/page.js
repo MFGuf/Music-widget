@@ -117,6 +117,15 @@ function ack(id, ok, msg) {
 
 // --- Жизненный цикл ---------------------------------------------------------
 
+// Content script сообщает, что скрипт главного мира загрузился. Не ждём
+// конца интервала: первый снимок полезен сразу.
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.t === "pageReady") {
+    schedulePoll(0);
+  }
+  return undefined;
+});
+
 browser.runtime.onInstalled.addListener(() => start());
 browser.runtime.onStartup.addListener(() => start());
 
