@@ -439,6 +439,90 @@ assert("page: ерунда отклоняется", !!res && res.ok === false);
 res = await ask("getState", null);
 assert("page: после команд скрипт жив", !!res && typeof res.title === "string");
 
+// --- команды: следующий и предыдущий трек ------------------------------------
+
+// Кнопки, похожие на переключение, но означающие другое, не должны
+// срабатывать: у VK рядом лежат перемешивание и карусель.
+document.body.innerHTML = [
+  '<div class="track-name"><div class="track-name__title">Ловушки</div></div>',
+  '<div class="player__controls">',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Перемешать"></button>',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Далее в плейлисте"></button>',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Следующий трек" id="btn-next"></button>',
+  '</div>',
+].join("");
+
+// Диагностика: тот же отбор, что делает page.js, но прямо здесь.
+// Заодно страхует от возврата бага с \w: в JavaScript он не покрывает
+// кириллицу, и «следующ\w*» перестал бы находить «Следующий трек».
+var DIAG_SELECTOR = 'button,[role="button"],[data-test-id],[class*="Icon"],[class*="Tappable"]';
+var DIAG_NEXT = /(^|[\s_-])(next|следующ[а-яё]*|впер[её]д|вперед)([\s_-]|$)/i;
+var DIAG_PREV = /(^|[\s_-])(prev|previous|предыдущ[а-яё]*|предыд[а-яё]*|назад)([\s_-]|$)/i;
+var DIAG_BAD = /shuffle|shuf|repeat|volume|mute|like|favou?rite|share|download|queue|playlist|lyric|expand|more|setting|quality|comment|sponsor|add|remove|delete|open|fullscreen|cast|pip|scroll|carousel|arrow|swiper|slider|dots|navigation/i;
+var diagLabel = document.getElementById("btn-next").getAttribute("aria-label");
+assertEqual("page: диагностика - кнопки найдены",
+  document.querySelectorAll(DIAG_SELECTOR).length, 3);
+assert("page: диагностика - RE_NEXT ловит кириллицу", DIAG_NEXT.test(diagLabel),
+  JSON.stringify(diagLabel));
+assert("page: диагностика - лишние слова отсеиваются", !DIAG_BAD.test(diagLabel),
+  JSON.stringify(diagLabel));
+
+window.__clicks = [];
+for (const b of document.querySelectorAll("button")) {
+  b.addEventListener("click", function () { window.__clicks.push(b.getAttribute("aria-label")); });
+}
+
+res = await ask("cmd", { action: "next" });
+assert("page: next нажал кнопку следующего трека",
+  !!res && res.ok === true && res.msg.indexOf("кнопка") === 0, JSON.stringify(res));
+assertEqual("page: next нажал ровно одну кнопку", window.__clicks.length, 1);
+assertEqual("page: next не спутал с «Далее в плейлисте»",
+  window.__clicks[0], "Следующий трек");
+
+res = await ask("cmd", { action: "prev" });
+assert("page: prev без своей кнопки честно отказывает",
+  !!res && res.ok === false && res.msg.indexOf("не нашёл") === 0, JSON.stringify(res));
+
+document.body.innerHTML = [
+  '<div class="player__controls">',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Предыдущий трек" id="btn-prev"></button>',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Назад в истории"></button>',
+  '</div>',
+].join("");
+window.__clicks = [];
+for (const b of document.querySelectorAll("button")) {
+  b.addEventListener("click", function () { window.__clicks.push(b.getAttribute("aria-label")); });
+}
+res = await ask("cmd", { action: "prev" });
+assertEqual("page: prev нажал ровно одну кнопку", window.__clicks.length, 1);
+assertEqual("page: prev не спутал с «Назад в истории»",
+  window.__clicks[0], "Предыдущий трек");
+
+// Английские подписи VK тоже встречаются.
+document.body.innerHTML = [
+  '<div class="player__controls">',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Next track"></button>',
+  '  <button class="Icon" style="width:40px;height:40px" aria-label="Previous track"></button>',
+  '</div>',
+].join("");
+window.__clicks = [];
+for (const b of document.querySelectorAll("button")) {
+  b.addEventListener("click", function () { window.__clicks.push(b.getAttribute("aria-label")); });
+}
+await ask("cmd", { action: "next" });
+await ask("cmd", { action: "prev" });
+assertEqual("page: английские подписи распознаны", window.__clicks.length, 2);
+assertEqual("page: next по-английски", window.__clicks[0], "Next track");
+assertEqual("page: prev по-английски", window.__clicks[1], "Previous track");
+
+// Невидимая кнопка не должна нажиматься.
+document.body.innerHTML =
+  '<button class="Icon" style="display:none" aria-label="Следующий трек" id="hidden"></button>';
+window.__clicks = [];
+res = await ask("cmd", { action: "next" });
+assert("page: скрытая кнопка не нажимается",
+  !!res && res.ok === false, JSON.stringify(res));
+
     done();
   } catch (e) {
     fail("набор page упал", e);

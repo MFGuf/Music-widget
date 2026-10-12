@@ -684,9 +684,23 @@
   // Слова проверяем с границами: иначе "play" совпадёт с "playlist",
   // а "next" - с "nextPage".
   const RE_TOGGLE = /(^|[\s_-])(play|pause|resume|воспроизвести|воспроизведение|пауза|играть)([\s_-]|$)/i;
+  // ВНИМАНИЕ: окончания заданы как [а-яё]*, а не \w*. В JavaScript \w -
+  // это только [A-Za-z0-9_], кириллицу он не покрывает: вариант
+  // "следующ\w*" молча переставал находить «Следующий трек». В Python,
+  // откуда пришёл этот код, \w был Unicode-адресным и всё работало.
+  const RE_NEXT = /(^|[\s_-])(next|следующ[а-яё]*|впер[её]д|вперед)([\s_-]|$)/i;
+  const RE_PREV = /(^|[\s_-])(prev|previous|предыдущ[а-яё]*|предыд[а-яё]*|назад)([\s_-]|$)/i;
 
   function findToggleButton() {
     return findButton(RE_TOGGLE, new RegExp(COMMON_BAD.source + "|" + PREV_WORDS.source + "|" + NEXT_WORDS.source, "i"));
+  }
+
+  function findNextButton() {
+    return findButton(RE_NEXT, new RegExp(COMMON_BAD.source + "|" + PREV_WORDS.source, "i"));
+  }
+
+  function findPrevButton() {
+    return findButton(RE_PREV, new RegExp(COMMON_BAD.source + "|" + NEXT_WORDS.source, "i"));
   }
 
   // Ищем видимый медиаэлемент: на паузе он всё равно подходит.
@@ -748,6 +762,18 @@
       : { ok: false, msg: "не нашёл ни кнопку плеера, ни медиаэлемент" };
   }
 
+  // Переключение треков у VK есть только кнопкой: у медиаэлемента нет
+  // методов next/previous, а плейлист живёт в закрытом JS-состоянии
+  // страницы, до которого расширение не дотягивается.
+  function commandSkip(button, what) {
+    const found = button();
+    if (!found) {
+      return { ok: false, msg: "не нашёл кнопку «" + what + "»" };
+    }
+    found.click();
+    return { ok: true, msg: "кнопка: " + buttonMeta(found).slice(0, 60) };
+  }
+
   function runCommand(action, ratio) {
     switch (action) {
       case "toggle":
@@ -755,10 +781,12 @@
       case "stop":
         return commandStop();
       case "next":
+        return commandSkip(findNextButton, "следующий трек");
       case "prev":
+        return commandSkip(findPrevButton, "предыдущий трек");
       case "seek":
-        // Реализуется в задачах 11-13.
-        return { ok: false, msg: "команда " + action + " ещё не реализована" };
+        // Реализуется в задаче 13.
+        return { ok: false, msg: "команда seek ещё не реализована" };
       default:
         return { ok: false, msg: "неизвестная команда: " + action };
     }
