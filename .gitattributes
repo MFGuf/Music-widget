@@ -1,0 +1,8 @@
+# Расширение Firefox и его скрипты должны иметь LF - CRLF ломает
+# парсинг manifest.json и page.js на некоторых системах.
+extension/** text eol=lf
+native/**   text eol=lf
+widget/**   text eol=lf
+tools/**    text eol=lf
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
