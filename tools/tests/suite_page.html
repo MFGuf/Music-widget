@@ -163,7 +163,9 @@ window.fetch = function (input) {
 function ask(type, payload) {
   return new Promise(function (resolve) {
     var id = ask.nextId++;
-    var timer = setTimeout(function () { resolve(null); }, 1000);
+    // Таймаут заведомо щедрый: стенд бывает запущен на загруженной машине,
+    // и на 1000 мс проверки сыпались без всякой причины.
+    var timer = setTimeout(function () { resolve(null); }, 3000);
     function onMessage(ev) {
       var d = ev.data;
       if (!d || d.__mw !== 1 || d.dir !== "toContent" || d.id !== id) {
