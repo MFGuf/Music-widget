@@ -604,6 +604,196 @@
     };
   }
 
+  // --- спектр ---------------------------------------------------------------
+
+  // Полосы рисуются в виджете. Взять их можно двумя способами:
+  //
+  //  1) Подключиться к уже существующему графу WebAudio плеера. Анализатор
+  //     подвешивается к источнику и НЕ соединяется с destination - звук
+  //     при этом не меняется вообще, и, главное, не может заглохнуть.
+  //
+  //  2) Если плеер играет через обычный <audio> без WebAudio - снять копию
+  //     потока через captureStream(). Это тоже не трогает звук: элемент
+  //     по-прежнему сам играет в колонки, а AudioContext только слушает.
+  //
+  // Чего делать нельзя: createMediaElementSource() на элементе плеера
+  // навсегда перенаправляет его звук в контекст. Если контекст окажется
+  // приостановленным (политика автозапуска), музыка замолчит - поэтому
+  // этот путь не используется.
+
+  const BANDS = 20;
+
+  const spectrum = {
+    ctx: null,
+    analyser: null,
+    node: null,
+    element: null,
+    // Анализаторы, которые создаёт сам плеер: пригодятся, если у него
+    // своя визуализация.
+    foreign: null,
+    audioHooked: false,
+  };
+
+  function makeAnalyser(ctx) {
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 128;
+    analyser.smoothingTimeConstant = 0.75;
+    return analyser;
+  }
+
+  // Вешает наш анализатор на узел источника звука плеера.
+  function tapNode(ctx, node) {
+    if (spectrum.node === node) {
+      return;
+    }
+    try {
+      const analyser = makeAnalyser(ctx);
+      node.connect(analyser);
+      spectrum.ctx = ctx;
+      spectrum.node = node;
+      spectrum.analyser = analyser;
+    } catch (e) {
+      // Узел уже подключён куда-то ещё - оставляем как есть.
+    }
+  }
+
+  function hookAudioGraph() {
+    if (spectrum.audioHooked) {
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC || !AC.prototype) {
+      return;
+    }
+    spectrum.audioHooked = true;
+
+    const proto = AC.prototype;
+    const origSource = proto.createMediaElementSource;
+    const origAnalyser = proto.createAnalyser;
+    const origStreamSource = proto.createMediaStreamSource;
+
+    proto.createMediaElementSource = function () {
+      const node = origSource.apply(this, arguments);
+      tapNode(this, node);
+      return node;
+    };
+    proto.createMediaStreamSource = function () {
+      const node = origStreamSource.apply(this, arguments);
+      tapNode(this, node);
+      return node;
+    };
+    proto.createAnalyser = function () {
+      const analyser = origAnalyser.apply(this, arguments);
+      // Запоминаем чужой анализатор: он уже подключён к звуку.
+      if (!spectrum.foreign) {
+        spectrum.foreign = analyser;
+      }
+      return analyser;
+    };
+  }
+
+  // Отдельный контекст только для чтения: он ни к чему не подключён и
+  // потому не влияет на вывод звука.
+  function tapThroughCaptureStream(media) {
+    if (spectrum.element === media && spectrum.analyser) {
+      return spectrum.analyser;
+    }
+    if (typeof media.captureStream !== "function") {
+      return null;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) {
+      return null;
+    }
+    try {
+      const stream = media.captureStream();
+      if (!stream) {
+        return null;
+      }
+      const ctx = new AC();
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = makeAnalyser(ctx);
+      // Только чтение: в destination ничего не ведём.
+      src.connect(analyser);
+      if (ctx.state === "suspended" && typeof ctx.resume === "function") {
+        ctx.resume().catch(() => {});
+      }
+      spectrum.ctx = ctx;
+      spectrum.analyser = analyser;
+      spectrum.element = media;
+      spectrum.node = null;
+      return analyser;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function currentAnalyser() {
+    if (spectrum.analyser) {
+      return spectrum.analyser;
+    }
+    if (spectrum.foreign) {
+      return spectrum.foreign;
+    }
+    const media = anyMedia();
+    if (media) {
+      return tapThroughCaptureStream(media);
+    }
+    return null;
+  }
+
+  // Полосы собираются логарифмически: низкие частоты иначе занимают весь
+  // экран, а высокие не видны совсем.
+  function readBands() {
+    const out = new Array(BANDS).fill(0);
+    const analyser = currentAnalyser();
+    if (!analyser || typeof analyser.getByteFrequencyData !== "function") {
+      return out;
+    }
+    try {
+      const bins = analyser.frequencyBinCount;
+      if (!bins) {
+        return out;
+      }
+      const data = new Uint8Array(bins);
+      analyser.getByteFrequencyData(data);
+
+      // Полосы не должны наезжать друг на друга. При логарифмической
+      // шкале первые несколько полос попадают в один и тот же бин, и
+      // басы зажигали бы две-три полосы сразу, поэтому начало каждой
+      // полосы прижимается к началу предыдущей плюс один бин.
+      // Начинаем с -1, иначе первая полоса сдвинулась бы с бина 0.
+      let prevFrom = -1;
+      for (let i = 0; i < BANDS; i++) {
+        let from = Math.floor(Math.pow(i / BANDS, 1.7) * bins);
+        if (from < prevFrom + 1) {
+          from = prevFrom + 1;
+        }
+        if (from > bins - 1) {
+          from = bins - 1;
+        }
+        let to = Math.floor(Math.pow((i + 1) / BANDS, 1.7) * bins);
+        if (to < from + 1) {
+          to = from + 1;
+        }
+        if (to > bins) {
+          to = bins;
+        }
+        let peak = 0;
+        for (let k = from; k < to && k < bins; k++) {
+          if (data[k] > peak) {
+            peak = data[k];
+          }
+        }
+        out[i] = peak / 255;
+        prevFrom = from;
+      }
+    } catch (e) {
+      return new Array(BANDS).fill(0);
+    }
+    return out;
+  }
+
   // --- сборка состояния -------------------------------------------------------
 
   function buildState() {
@@ -645,7 +835,7 @@
       dur: dur,
       durExact: durExact,
       frac: where.frac,
-      bands: [],
+      bands: readBands(),
       seekHint: seekHint,
       seekAt: seekAt,
     };
@@ -930,6 +1120,7 @@
   // сразу, как только о нём узнает content script.
   hookMediaPrototypes();
   hookNetwork();
+  hookAudioGraph();
 
   function reply(id, payload) {
     if (token === null) {

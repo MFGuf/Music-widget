@@ -88,6 +88,61 @@ function makeFakeResponse(payload) {
   };
 }
 
+// Мок WebAudio ставится ДО page.js: скрипт подменяет методы прототипа
+// AudioContext в момент загрузки.
+window.__graph = [];
+window.__createdAnalysers = [];
+window.__createdNodes = [];
+window.__spectrumPattern = null;
+
+function FakeNode() { this.connected = []; }
+FakeNode.prototype.connect = function (target) {
+  this.connected.push(target);
+  window.__graph.push([this, target]);
+  return target;
+};
+
+function FakeAnalyser() {
+  this.fftSize = 2048;
+  this.smoothingTimeConstant = 0.8;
+  this.frequencyBinCount = 64;
+}
+FakeAnalyser.prototype.getByteFrequencyData = function (data) {
+  var pattern = window.__spectrumPattern;
+  for (var i = 0; i < data.length; i++) {
+    data[i] = pattern ? (pattern[i % pattern.length] | 0) : 0;
+  }
+};
+
+function FakeAudioContext() {
+  this.state = "running";
+  this.destination = { __destination: true };
+}
+FakeAudioContext.prototype.createAnalyser = function () {
+  var a = new FakeAnalyser();
+  window.__createdAnalysers.push(a);
+  return a;
+};
+FakeAudioContext.prototype.createMediaElementSource = function () {
+  var n = new FakeNode();
+  window.__createdNodes.push(n);
+  return n;
+};
+FakeAudioContext.prototype.createMediaStreamSource = function () {
+  var n = new FakeNode();
+  window.__createdNodes.push(n);
+  return n;
+};
+FakeAudioContext.prototype.createGain = function () { return new FakeNode(); };
+FakeAudioContext.prototype.resume = function () { return Promise.resolve(); };
+
+window.AudioContext = FakeAudioContext;
+window.webkitAudioContext = FakeAudioContext;
+window.__origAudioProtos = {
+  source: FakeAudioContext.prototype.createMediaElementSource,
+  analyser: FakeAudioContext.prototype.createAnalyser,
+};
+
 window.__origFetch = window.fetch;
 window.__origXhrOpen = window.XMLHttpRequest.prototype.open;
 window.__fetchCalls = [];
@@ -616,6 +671,78 @@ assert("page: перемотка без доли отклоняется",
 
 res = await ask("cmd", { action: "seek", ratio: "мусор" });
 assert("page: нечисловая доля отклоняется", !!res && res.ok === false, JSON.stringify(res));
+
+// --- спектр -------------------------------------------------------------------
+
+assert("page: createMediaElementSource перехвачен",
+  window.AudioContext.prototype.createMediaElementSource !== window.__origAudioProtos.source);
+assert("page: createAnalyser перехвачен",
+  window.AudioContext.prototype.createAnalyser !== window.__origAudioProtos.analyser);
+
+// Плеер создаёт узел через WebAudio - мы должны подцепиться к нему.
+window.__graph.length = 0;
+window.__createdAnalysers.length = 0;
+var vkCtx = new window.AudioContext();
+var vkNode = vkCtx.createMediaElementSource(document.createElement("audio"));
+
+assertEqual("page: на узел плеера повешен наш анализатор", window.__createdAnalysers.length, 1);
+assertEqual("page: узел соединён с анализатором", vkNode.connected.length, 1);
+assert("page: анализатор наш, с нужным размером окна",
+  window.__createdAnalysers[0].fftSize === 128, "fftSize=" + window.__createdAnalysers[0].fftSize);
+
+// Главное требование безопасности: анализатор НЕ соединён с destination.
+// Если бы он был, приостановленный контекст мог бы заглушить музыку.
+var toDestination = window.__graph.filter(function (pair) {
+  return pair[1] === vkCtx.destination;
+});
+assertEqual("page: звук не перенаправляется в destination", toDestination.length, 0);
+
+assertEqual("page: подвешивание не дублируется",
+  vkCtx.createMediaElementSource(document.createElement("audio")) !== null, true);
+
+// Полосы: низкая частота попадает в первую полосу.
+var bands = new Array(64).fill(0);
+bands[0] = 255;
+window.__spectrumPattern = bands;
+mockPlayer({ playing: true, position: 5, duration: 200 });
+st = await ask("getState", null);
+assertEqual("page: спектр состоит из 20 полос", st.bands.length, 20);
+assertEqual("page: низкая частота даёт первую полосу", st.bands[0], 1);
+assert("page: остальные полосы пусты", st.bands.slice(1).every(function (v) { return v === 0; }),
+  JSON.stringify(st.bands));
+
+// Высокая частота - в последнюю полосу.
+var high = new Array(64).fill(0);
+high[63] = 255;
+window.__spectrumPattern = high;
+st = await ask("getState", null);
+assertEqual("page: высокая частота даёт последнюю полосу", st.bands[19], 1);
+assert("page: низкие полосы при высокой частоте пусты",
+  st.bands.slice(0, 19).every(function (v) { return v === 0; }), JSON.stringify(st.bands));
+
+// Промежуточная частота попадает в середину шкалы.
+var mid = new Array(64).fill(0);
+mid[20] = 200;
+window.__spectrumPattern = mid;
+st = await ask("getState", null);
+var loudest = 0;
+for (var bi = 0; bi < 20; bi++) {
+  if (st.bands[bi] > st.bands[loudest]) {
+    loudest = bi;
+  }
+}
+assert("page: средняя частота даёт полосу в середине", loudest > 5 && loudest < 16,
+  "самая громкая полоса " + loudest);
+
+// Тишина - ровные нули, а не мусор.
+window.__spectrumPattern = null;
+st = await ask("getState", null);
+assert("page: в тишине спектр нулевой",
+  st.bands.every(function (v) { return v === 0; }), JSON.stringify(st.bands));
+
+// Спектр не должен ломать снимок состояния целиком.
+assert("page: после чтения спектра состояние целое",
+  typeof st.title === "string" && typeof st.dur === "number");
 
     done();
   } catch (e) {
