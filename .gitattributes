@@ -5,4 +5,7 @@ native/**   text eol=lf
 widget/**   text eol=lf
 tools/**    text eol=lf
 *.bat       text eol=crlf
+# ВАЖНО: install_host.ps1 хранится с UTF-8 BOM. PowerShell 5.1 (которым
+# запускается установщик) читает .ps1 без BOM в ANSI-кодировке, кириллица
+# рассыпается и скрипт не парсится. BOM не удалять.
 *.ps1       text eol=crlf

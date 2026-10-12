@@ -1,0 +1,7 @@
+{
+  "name": "music_widget_host",
+  "description": "Мост между расширением Music Widget и настольным виджетом",
+  "path": "host_launcher.bat",
+  "type": "stdio",
+  "allowed_extensions": ["music-widget@local.dev"]
+}
