@@ -20,18 +20,11 @@
 // Она защищает от чужих сообщений: скрипты самой страницы VK о ней не знают.
 
 (function () {
-  const NS = "__mw";
   const MSG_VERSION = 1;
 
   // Токен приходит от content script при инициализации. До него скрипт
   // молчит: иначе любой скрипт страницы мог бы слать нам сообщения.
   let token = null;
-
-  // Последняя перемотка, замеченная в сеттере currentTime. Объявлено до
-  // хуков: installCurrentTimeHook() вызывается сразу и обращается к этим
-  // переменным - при обратном порядке было бы ReferenceError.
-  let seekHint = 0;
-  let seekAt = 0;
 
   // --- хуки воспроизведения -------------------------------------------------
 
@@ -39,7 +32,6 @@
   // надёжный признак "играет" - перехват play()/pause() на прототипе.
   const playback = {
     playing: false,
-    lastChange: 0,
     playCount: 0,
     hooked: false,
   };
@@ -56,39 +48,25 @@
     const origPause = proto.pause;
     proto.play = function () {
       playback.playing = true;
-      playback.lastChange = Date.now();
       playback.playCount++;
       return origPlay.apply(this, arguments);
     };
     proto.pause = function () {
       playback.playing = false;
-      playback.lastChange = Date.now();
       return origPause.apply(this, arguments);
     };
-    // Перемотка меняет currentTime напрямую - запоминаем, чтобы позиция
-    // не выглядела как "прыжок назад".
-    const desc = Object.getOwnPropertyDescriptor(proto, "currentTime");
-    if (desc && desc.set) {
-      Object.defineProperty(proto, "currentTime", {
-        configurable: true,
-        enumerable: desc.enumerable,
-        get: desc.get,
-        set: function (v) {
-          seekHint = Number(v) || 0;
-          seekAt = Date.now();
-          return desc.set.call(this, v);
-        },
-      });
-    }
+    // currentTime намеренно НЕ перехватывается: позиция и так читается
+    // напрямую, а подмена свойства на прототипе лишний раз конфликтует
+    // с плеером страницы.
     playback.hooked = true;
   }
 
-  // Хуки ставятся в самом конце файла: состояние, к которому они обращаются,
-// объявлено через const/let выше, и обращение выше объявления дало бы
-// ReferenceError. Для document_start это не страшно - весь скрипт
-// выполняется синхронно до любого кода страницы.
-
-  // --- перехват ответов VK API -----------------------------------------------
+// Хуки ставятся в самом конце файла: состояние, к которому они обращаются,
+  // объявлено через const/let выше, и обращение выше объявления дало бы
+  // ReferenceError. Для document_start это не страшно - весь скрипт
+  // выполняется синхронно до любого кода страницы.
+  //
+  // Перехват ответов VK API -----------------------------------------------
 
   // В DOM у VK Музыки длительности трека нет вообще, а navigator.mediaSession
   // в Firefox отсутствует. Точное значение лежит в ответе API, который
@@ -97,8 +75,15 @@
   // Перехват сделан здесь, а не через webRequest расширения: скрипт и так
   // живёт в главном мире страницы до загрузки её собственных скриптов,
   // поэтому ловит запросы гарантированно и не требует лишних прав.
-  const apiMeta = new Map();
-  let apiHooked = false;
+  // Состояние перехвата живёт на window, а не в замыкании: после обновления
+  // расширения в странице остаётся прежняя копия скрипта со своими хуками.
+  // Если бы новая копия навесила fetch поверх старого, ответы разбирались
+  // бы дважды на каждый вызов. Общее состояние даёт один хук на страницу.
+  // Хук держит ссылку на absorbApiText первой копии, но метаданные лежат в
+  // общем объекте - поэтому найденное ею не теряется после обновления.
+  const apiState = window.__musicWidgetApiState ||
+    (window.__musicWidgetApiState = { meta: new Map(), hooked: false });
+  const apiMeta = apiState.meta;
 
   // Ответы больших плейлистов весят мегабайты - такие разбирать незачем.
   const MAX_API_TEXT = 4 * 1024 * 1024;
@@ -200,10 +185,10 @@
   }
 
   function hookNetwork() {
-    if (apiHooked) {
+    if (apiState.hooked) {
       return;
     }
-    apiHooked = true;
+    apiState.hooked = true;
 
     const origFetch = window.fetch;
     if (typeof origFetch === "function") {
@@ -446,8 +431,9 @@
     return fallback;
   }
 
-  function detectPlaying(media) {
-    const fromButton = playButtonState();
+  // Признак берём один раз за опрос: playButtonState() обходит все кнопки
+  // страницы, а вызывать его дважды смысла нет.
+  function detectPlaying(media, fromButton) {
     if (fromButton) {
       return fromButton === "playing";
     }
@@ -623,16 +609,21 @@
 
   const BANDS = 20;
 
-  const spectrum = {
-    ctx: null,
-    analyser: null,
-    node: null,
-    element: null,
-    // Анализаторы, которые создаёт сам плеер: пригодятся, если у него
-    // своя визуализация.
-    foreign: null,
-    audioHooked: false,
-  };
+  // Тот же приём с состоянием спектра: после обновления расширения старая
+  // копия скрипта остаётся в странице с уже навешенным хуком AudioContext.
+  // Дублировать хук нельзя - на каждый узел плеера повисло бы по два
+  // анализатора.
+  const spectrum = window.__musicWidgetSpectrum ||
+    (window.__musicWidgetSpectrum = {
+      ctx: null,
+      analyser: null,
+      node: null,
+      element: null,
+      // Анализаторы, которые создаёт сам плеер: пригодятся, если у него
+      // своя визуализация.
+      foreign: null,
+      hooked: false,
+    });
 
   function makeAnalyser(ctx) {
     const analyser = ctx.createAnalyser();
@@ -658,14 +649,14 @@
   }
 
   function hookAudioGraph() {
-    if (spectrum.audioHooked) {
+    if (spectrum.hooked) {
       return;
     }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC || !AC.prototype) {
       return;
     }
-    spectrum.audioHooked = true;
+    spectrum.hooked = true;
 
     const proto = AC.prototype;
     const origSource = proto.createMediaElementSource;
@@ -799,7 +790,8 @@
   function buildState() {
     const media = bestMedia();
     const text = readTrackText();
-    const playing = detectPlaying(media);
+    const fromButton = playButtonState();
+    const playing = detectPlaying(media, fromButton);
     const trackKey = text.title + "|" + text.artist;
     const where = readPosition(media, playing, trackKey, Date.now());
     const api = durationFor(text.artist, text.title);
@@ -829,15 +821,13 @@
       coverUrl: coverUrl,
       playing: playing,
       hasMedia: !!media || playback.playing || playback.playCount > 0,
-      hasPlayButton: !!playButtonState(),
+      hasPlayButton: !!fromButton,
       url: location.href,
       pos: pos,
       dur: dur,
       durExact: durExact,
       frac: where.frac,
       bands: readBands(),
-      seekHint: seekHint,
-      seekAt: seekAt,
     };
   }
 
@@ -1015,8 +1005,6 @@
     } catch (e) {
       return null;
     }
-    seekHint = target;
-    seekAt = Date.now();
     return "audio " + Math.round(ratio * 100) + "%";
   }
 
@@ -1142,11 +1130,15 @@
       return;
     }
 
+    // init приходит на document_start, раньше скриптов страницы. Повторный
+    // init - это перезапуск content script после обновления расширения:
+    // у новой копии другой токен, и если бы мы его не приняли, вкладка
+    // VK замолчала бы до ручной перезагрузки страницы.
     if (data.t === "init") {
-      if (token === null) {
+      if (data.token) {
         token = data.token;
-        reply(data.id, { ready: true });
       }
+      reply(data.id, { ready: true });
       return;
     }
 

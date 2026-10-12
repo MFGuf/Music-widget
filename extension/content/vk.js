@@ -28,10 +28,14 @@ const TOKEN = randomToken();
 const pending = new Map();
 let nextId = 1;
 
-// Помечает, что скрипт уже внедрён в эту страницу. Атрибут виден из любого
-// мира страницы, поэтому повторная вставка (например, из injectIntoOpenTabs)
-// безопасно откажется.
+// Помечает, что скрипт уже внедрён в эту страницу. Значение - версия
+// расширения, а не просто флаг: после обновления расширения прежний
+// скрипт выгружается, а атрибут остаётся на странице. Со флагом вкладка
+// VK перестала бы работать навсегда - до ручной перезагрузки страницы.
+// С версией повторная вставка после обновления проходит, а вот две копии
+// одной версии - нет.
 const GUARD_ATTR = "data-music-widget-content";
+const GUARD_VALUE = String((browser.runtime.getManifest() || {}).version || "0");
 
 function randomToken() {
   const bytes = new Uint8Array(16);
@@ -58,7 +62,7 @@ function injectPageScript() {
 }
 
 function start() {
-  document.documentElement.setAttribute(GUARD_ATTR, "1");
+  document.documentElement.setAttribute(GUARD_ATTR, GUARD_VALUE);
   injectPageScript();
   browser.runtime.onMessage.addListener(onRuntimeMessage);
   initPageScript();
@@ -133,8 +137,10 @@ function onRuntimeMessage(msg) {
   return undefined;
 }
 
-// Повторная вставка скрипта (обновление расширения, injectIntoOpenTabs)
-// не должна заводить вторую копию обработчиков.
-if (!document.documentElement.hasAttribute(GUARD_ATTR)) {
+// Повторная вставка скрипта той же версии (например, гонка между
+// внедрением из манифеста и injectIntoOpenTabs) не должна заводить вторую
+// копию обработчиков. Другая версия - значит обновление расширения, и
+// скрипт должен запуститься заново.
+if (document.documentElement.getAttribute(GUARD_ATTR) !== GUARD_VALUE) {
   start();
 }

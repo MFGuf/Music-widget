@@ -305,11 +305,12 @@ window.__token = "тестовый-токен";
     assertEqual("page: без длительности доля не выдумывается", st.frac, 0);
     assertEqual("page: без длительности она не точна", st.durExact, false);
 
-    // Перемотка через сеттер currentTime запоминается.
-    a2.currentTime = 100;
-    st = await ask("getState", null);
-    assertEqual("page: перемотка видна сразу", st.pos, 100);
-    assertEqual("page: перемотка запомнена как подсказка", st.seekHint, 100);
+// Перемотка сразу видна в состоянии: currentTime читается напрямую.
+// У этого плеера длительности нет, поэтому доля остаётся нулевой.
+a2.currentTime = 100;
+st = await ask("getState", null);
+assertEqual("page: перемотка видна сразу", st.pos, 100);
+assertEqual("page: без длительности доля не выдумывается", st.frac, 0);
 
     // Без медиаэлемента позиция считается по ползунку и реальным часам.
     document.body.innerHTML =
@@ -743,6 +744,61 @@ assert("page: в тишине спектр нулевой",
 // Спектр не должен ломать снимок состояния целиком.
 assert("page: после чтения спектра состояние целое",
   typeof st.title === "string" && typeof st.dur === "number");
+
+// --- обновление расширения ---------------------------------------------------
+
+// После обновления расширения прежняя копия скрипта остаётся в странице.
+// Новая копия не должна навешивать хуки второй раз: иначе на каждый узел
+// плеера повисло бы по два анализатора, а каждый ответ API разбирался бы
+// дважды.
+var fetchBefore = window.fetch;
+var analyserBefore = window.AudioContext.prototype.createAnalyser;
+var sourceBefore = window.AudioContext.prototype.createMediaElementSource;
+var again = document.createElement("script");
+again.src = "/extension/page/page.js";
+document.body.appendChild(again);
+await new Promise(function (r) { setTimeout(r, 250); });
+
+assertEqual("page: повторная вставка не навешивает fetch второй раз",
+  window.fetch, fetchBefore);
+assertEqual("page: повторная вставка не навешивает createAnalyser второй раз",
+  window.AudioContext.prototype.createAnalyser, analyserBefore);
+assertEqual("page: повторная вставка не навешивает createMediaElementSource второй раз",
+  window.AudioContext.prototype.createMediaElementSource, sourceBefore);
+
+// Новый content script после обновления приходит со своим токеном.
+window.__token = "новый-токен";
+var readyAgain = await ask("init", null);
+assert("page: повторный init принят", !!readyAgain && readyAgain.ready === true,
+  JSON.stringify(readyAgain));
+
+st = await ask("getState", null);
+assert("page: после повторного init состояние читается",
+  !!st && typeof st.title === "string", JSON.stringify(st));
+
+// Прежний токен больше не принимается.
+var staleReply = new Promise(function (resolve) {
+  var timer = setTimeout(function () { resolve(null); }, 500);
+  window.addEventListener("message", function on(ev) {
+    var d = ev.data;
+    if (d && d.__mw === 1 && d.dir === "toContent" && d.id === 5150) {
+      clearTimeout(timer);
+      window.removeEventListener("message", on);
+      resolve(d);
+    }
+  });
+});
+window.postMessage(
+  { __mw: 1, dir: "toPage", id: 5150, token: "тестовый-токен", t: "getState" }, "*");
+var stale = await staleReply;
+assert("page: прежний токен после обновления больше не работает", stale === null,
+  JSON.stringify(stale));
+
+// Метаданные из ответов API пережили обновление: копия скрипта сменилась,
+// а состояние общее.
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: длительность из API пережила повторную вставку", st.dur, 245);
 
     done();
   } catch (e) {

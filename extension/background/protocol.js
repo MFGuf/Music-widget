@@ -1,7 +1,8 @@
 "use strict";
 
 // Общие константы и вспомогательные функции фоновой страницы.
-// Загружается первым - от него зависят native.js, tabs.js, api.js и page.js.
+// Загружается первым - от него зависят store.js, native.js, tabs.js,
+// art.js и page.js.
 
 // Имя хоста должно совпадать с полем "name" в native/music_widget_host.json
 // и с ключом реестра HKCU\Software\Mozilla\NativeMessagingHosts\<HOST_NAME>.
