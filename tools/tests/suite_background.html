@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>suite: background</title>
+</head>
+<body>
+<script src="/tools/tests/suite_common.js"></script>
+
+<script>
+"use strict";
+
+// Стабы browser API. Настоящие вызовы расширения мы перехватываем, чтобы
+// проверять решения фоновой страницы без живого Firefox.
+
+window.__calls = [];
+window.__listeners = {};
+
+function record(name, args) {
+  window.__calls.push({ name: name, args: args });
+}
+
+window.browser = {
+  runtime: {
+    connectNative: function (name) {
+      record("connectNative", [name]);
+      // Намеренно не резолвимся: в тесте подключение к хосту управляется
+      // вручную через window.__resolveHost().
+      return new Promise(function (resolve, reject) {
+        window.__hostResolve = resolve;
+        window.__hostReject = reject;
+      });
+    },
+    onInstalled: { addListener: function (f) { window.__listeners.installed = f; } },
+    onStartup: { addListener: function (f) { window.__listeners.startup = f; } },
+    getURL: function (p) { return "moz-extension://music-widget-test/" + p; },
+    getManifest: function () { return { version: "0.1.0" }; },
+  },
+  tabs: {
+    query: function (q) {
+      record("tabs.query", [q]);
+      return Promise.resolve(window.__tabs || []);
+    },
+    sendMessage: function (tabId, msg) {
+      record("tabs.sendMessage", [tabId, msg]);
+      if (window.__sendMessageImpl) {
+        return window.__sendMessageImpl(tabId, msg);
+      }
+      return Promise.resolve({ ok: true, msg: "stub" });
+    },
+    onUpdated: { addListener: function (f) { window.__listeners.tabUpdated = f; } },
+    onRemoved: { addListener: function (f) { window.__listeners.tabRemoved = f; } },
+    executeScript: function () { return Promise.resolve([]); },
+  },
+  webRequest: {
+    onBeforeRequest: { addListener: function (f, filt, extra) {
+      window.__listeners.webRequest = f;
+      window.__webRequestFilter = filt;
+      window.__webRequestExtra = extra;
+    } },
+  },
+  storage: {
+    local: {
+      get: function () { return Promise.resolve({}); },
+      set: function () { return Promise.resolve(); },
+    },
+  },
+};
+
+// Подключение к хосту: имитируем успех или провал.
+window.__resolveHost = function () {
+  if (window.__hostResolve) {
+    window.__hostResolve(makeFakePort());
+  }
+};
+window.__rejectHost = function (err) {
+  if (window.__hostReject) {
+    window.__hostReject(err || new Error("нет такого приложения"));
+  }
+};
+
+window.__sentToHost = [];
+
+function makeFakePort() {
+  var port = {
+    onMessage: { addListener: function (f) { port._onMessage = f; } },
+    onDisconnect: { addListener: function (f) { port._onDisconnect = f; } },
+    postMessage: function (msg) {
+      window.__sentToHost.push(JSON.parse(JSON.stringify(msg)));
+    },
+  };
+  return port;
+}
+
+// Порт, созданный connectNative, должен быть доступен тесту.
+window.browser.runtime.connectNative = (function (orig) {
+  return function (name) {
+    window.__calls.push({ name: "connectNative", args: [name] });
+    return new Promise(function (resolve, reject) {
+      window.__hostResolve = function () { resolve(makeFakePort()); };
+      window.__hostReject = reject;
+    });
+  };
+})();
+
+window.__portMessage = function (msg) {
+  var port = host.port;
+  if (port && port._onMessage) {
+    port._onMessage(msg);
+  }
+};
+
+window.__portDisconnect = function (err) {
+  var port = host.port;
+  if (port && port._onDisconnect) {
+    port._onDisconnect(err);
+  }
+};
+
+window.__lastState = function () {
+  for (var i = window.__sentToHost.length - 1; i >= 0; i--) {
+    if (window.__sentToHost[i].t === "state") {
+      return window.__sentToHost[i];
+    }
+  }
+  return null;
+};
+</script>
+
+<!-- Фоновые скрипты в порядке загрузки из page.html -->
+<script src="/extension/background/protocol.js"></script>
+<script src="/extension/background/native.js"></script>
+<script src="/extension/background/page.js"></script>
+
+<script>
+"use strict";
+
+// connectNative резолвится микро-задачей, поэтому после разыменования
+// промиса нужно отдать управление планировщику, иначе порт ещё не создан.
+function tick() {
+  return new Promise(function (resolve) { setTimeout(resolve, 0); });
+}
+
+(async function () {
+  try {
+    // --- protocol.js -------------------------------------------------------
+
+    assert("isVkHost: основной домен", isVkHost("https://vk.com/music") === true);
+    assert("isVkHost: music-поддомен", isVkHost("https://music.vk.com/") === true);
+    assert("isVkHost: vk.ru", isVkHost("https://vk.ru/music") === true);
+    assert("isVkHost: чужой домен vk.com.evil.net", isVkHost("https://vk.com.evil.net/music") === false);
+    assert("isVkHost: не URL", isVkHost("не url") === false);
+    assert("isVkHost: пусто", isVkHost("") === false);
+
+    assert("isMusicPage: /music", isMusicPage("https://vk.com/music5") === true);
+    assert("isMusicPage: artist-страница", isMusicPage("https://vk.com/music-123456_7890123") === true);
+    assert("isMusicPage: обычная страница VK", isMusicPage("https://vk.com/feed") === false);
+    assert("isMusicPage: другой сайт", isMusicPage("https://youtube.com/music") === false);
+
+    assertEqual("makeKey", makeKey(42), "tab:42");
+    assertEqual("makeCacheKey", makeCacheKey(1, "Song", "Artist"), "1|Song|Artist");
+
+    assertEqual("clamp01: больше 1", clamp01(1.5), 1);
+    assertEqual("clamp01: меньше 0", clamp01(-2), 0);
+    assertEqual("clamp01: NaN", clamp01("мусор"), 0);
+    assertEqual("clamp01: строка-число", clamp01("0.25"), 0.25);
+
+    assertEqual("trimText: схлопывает пробелы", trimText("  a \n b  "), "a b");
+    assertEqual("trimText: обрезает длинный текст", trimText("x".repeat(300)).length, 200);
+    assertEqual("trimText: обрезает по своему лимиту", trimText("x".repeat(300), 50).length, 50);
+    assertEqual("trimText: null", trimText(null), "");
+    assertEqual("trimText: не ломает эмодзи", trimText("хит 🔥"), "хит 🔥");
+
+    // --- native.js ---------------------------------------------------------
+
+    assert("native: константа протокола совпадает", PROTOCOL_VERSION === 1);
+    assert("native: имя хоста совпадает с реестром", HOST_NAME === "music_widget_host");
+    assertEqual("native: до подключения порта нет", host.port, null);
+
+    // Подключение к хосту: успех.
+    window.__resolveHost();
+    await tick();
+    assert("native: порт создан", host.port !== null);
+    assertEqual("native: hello уходит сразу", window.__sentToHost[0].t, "hello");
+    assertEqual("native: в hello есть версия", window.__sentToHost[0].v, PROTOCOL_VERSION);
+
+    // Команда из виджета должна дойти до обработчика. Подменяем onCommand
+// шпионом, который дополнительно вызывает настоящий обработчик - иначе
+// проверки маршрутизации ниже потеряют смысл.
+    var got = null;
+    var realCommand = host.onCommand;
+    host.onCommand = function (msg) {
+      got = msg;
+      return realCommand(msg);
+    };
+    window.__portMessage({ v: PROTOCOL_VERSION, t: "cmd", id: 7, action: "toggle", key: "tab:1" });
+    assert("native: команда доставлена", got !== null && got.action === "toggle", JSON.stringify(got));
+
+    // Сообщение чужой версии игнорируем.
+    got = null;
+    window.__portMessage({ v: 999, t: "cmd", id: 8, action: "toggle", key: "tab:1" });
+    assert("native: чужая версия протокола отброшена", got === null);
+
+    // Неизвестный тип не должен ронять обработчик.
+    got = null;
+    window.__portMessage({ v: PROTOCOL_VERSION, t: "ерунда" });
+    assert("native: неизвестный тип игнорируется", got === null);
+
+    // ping -> pong
+    window.__sentToHost.length = 0;
+    window.__portMessage({ v: PROTOCOL_VERSION, t: "ping" });
+    assertEqual("native: ping отвечает pong", window.__sentToHost[0].t, "pong");
+
+    // Слишком большое сообщение должно ужать обложки, а не упасть.
+    window.__sentToHost.length = 0;
+    var fat = [];
+    for (var i = 0; i < 12; i++) {
+      fat.push({ key: "tab:" + i, title: "трек " + i, art: "A".repeat(120000), art_new: true });
+    }
+    var sent = sendToHost({ t: "state", items: fat });
+    assert("native: большое сообщение принято", sent === true);
+    var st = window.__lastState();
+    if (st) {
+      var bytes = new TextEncoder().encode(JSON.stringify(st)).length;
+      assert("native: большое сообщение ужато до лимита", bytes <= 900 * 1024, "стало " + bytes + " байт");
+      assert("native: ужатое сообщение не потеряло источники", st.items.length === fat.length,
+        "осталось " + st.items.length);
+      assert("native: обложки убраны", st.items[0].art === "");
+    }
+
+    // Обрыв порта -> переподключение, но не чаще, чем раз в серию.
+    window.__portDisconnect({ message: "виджет закрыт" });
+    assert("native: обрыв сбрасывает соединение", host.connected === false);
+    assert("native: запланировано переподключение", host.retryTimer !== null);
+    var before = window.__calls.filter(function (c) { return c.name === "connectNative"; }).length;
+    window.__portDisconnect({ message: "повтор" });
+    assert("native: повторный обрыв не плодит таймеры",
+      window.__calls.filter(function (c) { return c.name === "connectNative"; }).length === before);
+    host.retryTimer = null;
+    host.retryDelayMs = 1000;
+
+    // Хост не зарегистрирован: connectNative отклоняется.
+    window.__calls.length = 0;
+    connectHost();
+    window.__rejectHost(new Error("No such native application music_widget_host"));
+    await tick();
+    await tick();
+    assert("native: ошибка подключения попала в lastError", lastError.indexOf("native host") >= 0, lastError);
+    assert("native: после ошибки запланирован повтор", host.retryTimer !== null);
+    host.retryTimer = null;
+
+    // --- page.js -----------------------------------------------------------
+
+    assert("page: без вкладок виджету объяснено почему", note().length > 0);
+    assert("page: подключение сорвано - причина в note", note().indexOf("Виджет") >= 0, note());
+
+    // Без соединения отправка не должна падать - просто молча отказывает.
+    assertEqual("page: без порта отправка отказывает", sendToHost({ t: "state", items: [] }), false);
+
+    // Возвращаем соединение и проверяем снимок. Прежний промис connectNative
+// уже отклонён, поэтому нужен новый вызов connectHost().
+    window.__calls.length = 0;
+    connectHost();
+    window.__resolveHost();
+    await tick();
+    await tick();
+    assert("page: соединение восстановлено", host.port !== null);
+
+    window.__sentToHost.length = 0;
+    sendState();
+    var state = window.__lastState();
+    assert("page: снимок уходит виджету", state !== null && state.t === "state",
+      JSON.stringify(state));
+    assert("page: в снимке есть выбранный источник", state !== null && "selected" in state);
+    assert("page: в снимке есть диагностика", state !== null && typeof state.note === "string");
+
+    // Команда для несуществующей вкладки должна быть отклонена, а не
+    // уронить фон.
+    window.__sentToHost.length = 0;
+    await host.onCommand({ action: "toggle", key: "tab:999", id: 5 });
+    var ack = window.__sentToHost.find(function (m) { return m.t === "ack"; });
+    assert("page: команда в несуществующую вкладку отклонена", !!ack && ack.ok === false,
+      JSON.stringify(ack));
+
+    done();
+  } catch (e) {
+    fail("набор background упал", e);
+    doneError(e);
+  }
+})();
+</script>
+</body>
+</html>

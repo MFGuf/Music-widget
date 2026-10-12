@@ -5,6 +5,10 @@
   <title>Music Widget - background</title>
 </head>
 <body>
+  <!-- Порядок важен: protocol.js даёт константы, native.js - транспорт,
+       page.js использует оба. -->
+  <script src="protocol.js"></script>
+  <script src="native.js"></script>
   <script src="page.js"></script>
 </body>
 </html>

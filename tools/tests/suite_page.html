@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>suite: page (main world)</title>
+</head>
+<body>
+<script src="/tools/tests/suite_common.js"></script>
+
+<script>
+// Заглушка набора: настоящие проверки главного мира страницы появятся
+// вместе с page/page.js (задача 7).
+</script>
+
+<script>
+try {
+  assertEqual("page: документ доступен", typeof document, "object");
+  done();
+} catch (e) {
+  fail("набор page упал", e);
+  doneError(e);
+}
+</script>
+</body>
+</html>

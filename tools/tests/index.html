@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Music Widget - tests</title>
+</head>
+<body>
+<script>
+"use strict";
+
+// Оркестратор: по очереди грузит наборы в iframe и собирает их отчёты.
+// Каждый набор живёт в отдельном документе, потому что page/page.js должен
+// видеть mock-DOM вкладки VK, а фоновые скрипты - стабы browser API.
+
+var SUITES = ["suite_background.html", "suite_page.html"];
+var SUITE_TIMEOUT_MS = 15000;
+
+var collected = [];
+var pending = null;
+var reported = true;
+var timer = null;
+
+function check(name, ok, detail) {
+  if (pending) {
+    pending.checks.push({ name: name, ok: !!ok, detail: detail || "" });
+  }
+}
+
+var __page = document.createElement("pre");
+__page.style.cssText =
+  "font:13px/1.5 monospace;background:#111;color:#ddd;padding:12px;margin:0;white-space:pre-wrap";
+document.body.appendChild(__page);
+
+function paint() {
+  var out = [];
+  for (var i = 0; i < collected.length; i++) {
+    var s = collected[i];
+    out.push("== " + s.name + (s.error ? "  [ОШИБКА: " + s.error + "]" : ""));
+    for (var j = 0; j < s.checks.length; j++) {
+      var c = s.checks[j];
+      out.push("  [" + (c.ok ? "ok  " : "FAIL") + "] " + c.name +
+               (c.ok ? "" : "  <- " + c.detail));
+    }
+  }
+  if (pending) {
+    out.push("== " + pending.name + " ... выполняется");
+  }
+  __page.textContent = out.join("\n");
+}
+
+// Набор вызывает это в конце. error != null - набор не смог начать.
+function suiteDone(error) {
+  // Набор может сообщить о завершении дважды: из своей точки выхода и из
+  // обработчика window.onerror. Повторный отчёт сбивает очередь наборов,
+  // поэтому он игнорируется.
+  if (reported) {
+    return;
+  }
+  reported = true;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  if (pending) {
+    pending.error = error || null;
+    collected.push(pending);
+    pending = null;
+  }
+  paint();
+  runNext();
+}
+
+function runNext() {
+  if (pending) {
+    return;
+  }
+  if (collected.length >= SUITES.length) {
+    finish();
+    return;
+  }
+  var name = SUITES[collected.length];
+  pending = { name: name, checks: [] };
+  reported = false;
+  paint();
+
+  var frame = document.createElement("iframe");
+  frame.width = 900;
+  frame.height = 400;
+  frame.style.cssText = "border:1px solid #ccc;display:block;margin:8px";
+  frame.src = "/tools/tests/" + name + "?parent=1";
+  frame.onerror = function () {
+    suiteDone("не удалось загрузить набор");
+  };
+  document.body.appendChild(frame);
+
+  timer = setTimeout(function () {
+    suiteDone("набор не ответил за " + SUITE_TIMEOUT_MS + " мс");
+    frame.remove();
+  }, SUITE_TIMEOUT_MS);
+}
+
+function finish() {
+  if (finished) {
+    return;
+  }
+  finished = true;
+  var body = JSON.stringify({ suites: collected });
+  fetch("/results", { method: "POST", body: body }).then(function () {
+    document.title = "ГОТОВО";
+  });
+}
+
+var finished = false;
+
+window.addEventListener("message", function (ev) {
+  if (ev.data && ev.data.__music_widget_tests === "done") {
+    suiteDone(ev.data.error || null);
+  }
+});
+
+window.addEventListener("error", function (ev) {
+  // Ошибка самого оркестратора - терять нельзя, иначе тесты зависнут.
+  suiteDone("ошибка оркестратора: " + ev.message);
+});
+
+window.check = check;
+window.suiteDone = suiteDone;
+window.runNext = runNext;
+runNext();
+</script>
+</body>
+</html>
