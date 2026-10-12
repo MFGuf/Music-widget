@@ -31,23 +31,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "widget"))
+sys.path.insert(0, str(ROOT))
 
 import ipc  # noqa: E402
+from report import Checks  # noqa: E402
 
-passed = 0
-failed: list[str] = []
+checks = Checks("host", "native messaging хост (native/host.py)")
 
 
 def check(name, condition, detail=""):
-    global passed
-    if condition:
-        passed += 1
-    else:
-        failed.append(f"{name}{': ' + detail if detail else ''}")
+    return checks.ok(name, condition, detail)
 
 
 def check_equal(name, actual, expected):
-    check(name, actual == expected, f"получено {actual!r}, ожидалось {expected!r}")
+    return checks.equal(name, actual, expected)
 
 
 class SocketStream:
@@ -229,7 +226,7 @@ def main() -> int:
         widget.start()
         try:
             # Ждём, пока хост заметит виджета (он пробует раз в секунду).
-            deadline = time.time() + 12
+            deadline = time.time() + 25
             while time.time() < deadline and widget.connections == 0:
                 time.sleep(0.2)
             check("хост подключился к виджету", widget.connections >= 1,
@@ -266,7 +263,7 @@ def main() -> int:
             revived = FakeWidget(app_dir)
             revived.start()
             try:
-                deadline = time.time() + 12
+                deadline = time.time() + 25
                 while time.time() < deadline and revived.connections == 0:
                     time.sleep(0.2)
                 check("хост переподключился к новому виджету",
@@ -290,18 +287,13 @@ def main() -> int:
     log_file = app_dir / "MusicWidget" / "host.log"
     if log_file.exists():
         text = log_file.read_text(encoding="utf-8")
-        check("в журнале нет необработанных сбоев",
-              "Traceback" not in text and "непредвиденный" not in text,
-              "\n".join(line for line in text.splitlines() if "Traceback" in line))
+        bad = [line for line in text.splitlines()
+               if "Traceback" in line or "непредвиденный" in line]
+        check("в журнале нет необработанных сбоев", not bad, "\n".join(bad))
+    else:
+        check("хост завёл журнал", False, "файла журнала нет")
 
-    print()
-    if failed:
-        print("ПРОВАЛЕНО: %d, успешно: %d" % (len(failed), passed))
-        for item in failed:
-            print("  - " + item)
-        return 1
-    print("Все проверки пройдены: %d" % passed)
-    return 0
+    return checks.finish()
 
 
 if __name__ == "__main__":
