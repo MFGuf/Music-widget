@@ -1,0 +1,48 @@
+{
+  "manifest_version": 2,
+  "name": "Music Widget Bridge",
+  "short_name": "Music Widget",
+  "version": "0.1.0",
+  "description": "Передаёт состояние плеера VK Музыки в настольный виджет и принимает от него команды управления.",
+  "author": "Music Widget",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "music-widget@local.dev",
+      "strict_min_version": "115.0"
+    }
+  },
+
+  "permissions": [
+    "tabs",
+    "storage",
+    "nativeMessaging",
+    "webRequest",
+    "webRequestBlocking",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "page": "background/page.html",
+    "persistent": true
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "*://vk.com/*",
+        "*://vk.ru/*",
+        "*://*.vk.com/*",
+        "*://*.vk.ru/*"
+      ],
+      "js": ["content/vk.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+
+  "icons": {
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png"
+  }
+}

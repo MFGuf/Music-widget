@@ -1,9 +1,23 @@
 # Расширение Firefox и его скрипты должны иметь LF - CRLF ломает
 # парсинг manifest.json и page.js на некоторых системах.
+#
+# ВАЖНО: бинарные файлы (иконки, xpi) обязаны быть помечены как binary.
+# Универсальное правило `extension/** text` иначе ломает PNG - git
+# конвертирует байты и файл в репозитории перестаёт читаться.
 extension/** text eol=lf
 native/**   text eol=lf
 widget/**   text eol=lf
 tools/**    text eol=lf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.xpi  binary
+*.zip  binary
+*.woff binary
+*.woff2 binary
 *.bat       text eol=crlf
 # ВАЖНО: install_host.ps1 хранится с UTF-8 BOM. PowerShell 5.1 (которым
 # запускается установщик) читает .ps1 без BOM в ANSI-кодировке, кириллица
