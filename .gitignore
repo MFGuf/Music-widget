@@ -17,6 +17,8 @@ tools/_manifest_version.txt
 tools/.testprofile/
 tools/.testreport.txt
 tools/.extensioncheck.txt
+# Отчёты проверок на Python (пишет report.py)
+tools/.*.txt
 
 # IDE
 .vs/
