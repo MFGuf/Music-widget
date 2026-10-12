@@ -20,6 +20,10 @@ async function pollTabs() {
   try {
     await refreshSources();
     rebuildItems();
+    // Обложки грузятся асинхронно: ждать их здесь нельзя, иначе опрос
+    // вкладок встанет на время скачивания картинки. Виджет получит их в
+    // следующем снимке - это меньше секунды.
+    updateArt();
     sendState();
   } catch (e) {
     setError("опрос вкладок: " + (e && e.message ? e.message : e));

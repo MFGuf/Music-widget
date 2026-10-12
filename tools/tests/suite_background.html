@@ -362,6 +362,84 @@ function tick() {
     window.__tabs = [];
     window.__sendMessageImpl = null;
 
+    // --- art.js: обложки -----------------------------------------------------
+
+    // Подменяем fetch расширения на загрузку настоящей картинки:
+    // canvas -> Blob проходит через createImageBitmap без изменений,
+    // поэтому проверяется весь путь целиком.
+    async function makeArtBlob(width, height) {
+      var c = document.createElement("canvas");
+      c.width = width;
+      c.height = height;
+      var g = c.getContext("2d");
+      g.fillStyle = "#7c5cff";
+      g.fillRect(0, 0, width, height);
+      return new Promise(function (resolve) { c.toBlob(resolve, "image/png"); });
+    }
+
+    var artRequests = [];
+    window.__origFetch = window.fetch;
+    window.fetch = function (url, opts) {
+      artRequests.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        blob: function () { return makeArtBlob(1000, 800); },
+      });
+    };
+
+    store.sources = new Map([[1, { tabId: 1, url: "https://vk.com/music", ready: true,
+      state: { title: "С обложкой", artist: "Артист", playing: true, pos: 1, dur: 0, frac: 0,
+               coverUrl: "https://sun1-96.userapi.com/big.jpg" } }]]);
+    window.__tabs = VK_TABS;
+    window.__sendMessageImpl = function () {
+      return Promise.resolve({ title: "С обложкой", artist: "Артист", playing: true, pos: 1,
+        dur: 0, frac: 0, coverUrl: "https://sun1-96.userapi.com/big.jpg" });
+    };
+
+    await pollTabs();
+    await updateArt();
+    var withArt = store.lastItems[0];
+    assert("page: обложка загрузилась", !!(withArt && withArt.art),
+      "art=" + JSON.stringify(withArt && withArt.art) + " ошибка=" + artLastError);
+    assert("page: обложка - чистый base64 без префикса",
+      withArt.art.indexOf("data:") < 0, withArt.art.slice(0, 40));
+    assert("page: обложка помечена как новая", withArt.art_new === true);
+    assertEqual("page: запрос обложки ушёл по адресу из вкладки",
+      artRequests[0], "https://sun1-96.userapi.com/big.jpg");
+
+    // Повторный опрос берёт обложку из кэша и не качает заново.
+    artRequests.length = 0;
+    await pollTabs();
+    await updateArt();
+    assertEqual("page: повторный опрос не качает обложку заново", artRequests.length, 0);
+    assertEqual("page: обложка из кэша не помечается новой", store.lastItems[0].art_new, false);
+    assert("page: обложка из кэша на месте", store.lastItems[0].art === withArt.art);
+
+    // Обложки нет - источник всё равно работает.
+    window.__sendMessageImpl = function () {
+      return Promise.resolve({ title: "Без обложки", artist: "Артист", playing: true, pos: 1, dur: 0, frac: 0 });
+    };
+    artRequests.length = 0;
+    await pollTabs();
+    await updateArt();
+    assertEqual("page: без обложки источник остаётся в списке", store.lastItems.length, 2);
+    assertEqual("page: без обложки пустое поле art", store.lastItems[0].art, "");
+    assertEqual("page: без обложки ничего не качается", artRequests.length, 0);
+
+    // Ошибка сети не должна ронять опрос.
+    window.fetch = function () { return Promise.reject(new Error("сеть")); };
+    window.__sendMessageImpl = function () {
+      return Promise.resolve({ title: "Обрыв", artist: "Артист", playing: true, pos: 1, dur: 0, frac: 0,
+        coverUrl: "https://sun1-96.userapi.com/missing.jpg" });
+    };
+    await pollTabs();
+    await updateArt();
+    assertEqual("page: после обрыва источник на месте", store.lastItems.length, 2);
+    assertEqual("page: после обрыва обложка пустая", store.lastItems[0].art, "");
+
+    window.fetch = window.__origFetch;
+
     // --- page.js: маршрутизация команд -------------------------------------
 
     window.__tabs = VK_TABS;
