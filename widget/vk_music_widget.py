@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import queue
 import sys
 import time
@@ -52,22 +53,39 @@ FRAME_MS = 50
 # Через сколько секунд без снимков считаем, что расширения нет.
 STALE_AFTER_SEC = 5.0
 
-# --- геометрия ---------------------------------------------------------------
-
+# Геометрия развёрнутого вида. Полоса прогресса и кнопки сдвинуты вниз:
+# между исполнителем и ними было пустое поле.
+#
+#   44  обложка 120
+#   176 надпись приложения
+#   192 название трека
+#   216 исполнитель
+#   262 полоса прогресса
+#   296 кнопки транспорта
+#   356 заголовок источников
+#   368 строки источников, две по 40
+#   456 диагностика или спектр
 COVER_Y = 44
 APP_Y = 176
 TITLE_Y = 192
 ARTIST_Y = 216
-PROGRESS_Y = 240
+PROGRESS_Y = 262
 PROGRESS_H = 5
-TIME_Y = 250
-BUTTONS_Y = 276
-LIST_HEAD_Y = 336
-LIST_Y = 352
-ROW_H = 46
-DIAG_Y = 440
-SPECTRUM_Y = 452
+TIME_Y = 272
+BUTTONS_Y = 296
+LIST_HEAD_Y = 356
+LIST_Y = 368
+ROW_H = 40
+FOOTER_Y = 456
 SPECTRUM_H = 14
+
+# Сколько вкладок VK видно в списке. Больше не нужно: выбирать из шести
+# вкладок мышью неудобно, а список прокручивать незачем.
+MAX_SOURCE_ROWS = 2
+
+# На сколько пикселей можно сдвинуть мышь, чтобы это ещё считалось кликом.
+# Всё большее - перетаскивание окна.
+DRAG_THRESHOLD = 4
 
 HEAD_SIZE = 28
 HEAD_Y = 10
@@ -100,6 +118,9 @@ class MusicWidget:
         self._cur_dur = 0.0
         self._bands = [0.0] * 20
         self._hover: str | None = None
+        self._pressed: str | None = None
+        self._press_xy = (0, 0)
+        self._did_drag = False
         self._drag_from = None
 
         self._build()
@@ -366,16 +387,22 @@ class MusicWidget:
             x += TRANSPORT + gap
 
     def _draw_sources(self, item) -> None:
+        """Список вкладок VK.
+
+        Показывается только когда их больше одной. При единственной вкладке
+        список занимал бы место впустую: выбирать не из чего.
+        """
+        if len(self.items) <= 1:
+            return
+
         x0 = (FULL_W - ROW_W) // 2
         self.canvas.create_text(
             x0, LIST_HEAD_Y, text="ИСТОЧНИКИ", font=("Segoe UI", 9, "bold"),
             fill=DIM, anchor="nw",
         )
-        if not self.items:
-            return
 
         y = LIST_Y
-        for entry in self.items[:2]:
+        for entry in self.items[:MAX_SOURCE_ROWS]:
             picked = item is not None and entry.get("key") == item.get("key")
             rect = (x0, y, x0 + ROW_W, y + 40)
             HIT["src:" + str(entry.get("key"))] = rect
@@ -397,21 +424,38 @@ class MusicWidget:
             )
             y += ROW_H
 
-    def _draw_footer(self, item) -> None:
-        x0 = (FULL_W - ROW_W) // 2
-        self.canvas.create_text(
-            x0, DIAG_Y, text=_clip(self.note, 46), font=("Segoe UI", 8),
-            fill=DIM, anchor="nw",
-        )
+    def _footer_y(self) -> int:
+        """Где рисовать подвал.
 
-        # Спектр: 20 полос, логарифмическая шкала по высоте.
+        Список источников занимает место до FOOTER_Y. Если вкладок не
+        больше одной, списка нет - и подвал встаёт сразу под кнопками, иначе
+        он повисал бы в пустоте посреди карточки.
+        """
+        if len(self.items) > 1:
+            return FOOTER_Y
+        return BUTTONS_Y + TRANSPORT + 26
+
+    def _draw_footer(self, item) -> None:
+        """Подвал: либо причина, почему ничего не играет, либо спектр.
+
+        Одновременно они не нужны: спектр без музыки всё равно плоский, а
+        диагностика при играющем треке только занимает место.
+        """
+        top = self._footer_y()
+        if item is None:
+            self.canvas.create_text(
+                (FULL_W - ROW_W) // 2, top, text=_clip(self.note, 46),
+                font=("Segoe UI", 8), fill=DIM, anchor="nw",
+            )
+            return
+
         bars = self._bands
         step = ROW_W / len(bars)
         width = max(2.0, step - 3)
         for index, value in enumerate(bars):
             height = max(1.5, value * SPECTRUM_H)
-            x = x0 + index * step
-            y = SPECTRUM_Y + (SPECTRUM_H - height) / 2
+            x = (FULL_W - ROW_W) // 2 + index * step
+            y = top + (SPECTRUM_H - height) / 2
             self.canvas.create_rectangle(
                 x, y, x + width, y + height,
                 fill=_accent_shade(0.45 + 0.55 * value), outline="",
@@ -460,22 +504,33 @@ class MusicWidget:
             self._render()
 
     def _on_press(self, event) -> None:
-        name = self._hit(event.x, event.y)
-        if name is None:
-            self._drag_from = (event.x_root - self.gx, event.y_root - self.gy)
-        else:
-            self._drag_from = None
-            self._pressed = name
+        # Запоминаем и нажатую кнопку, и точку захвата. Разберёмся в
+        # отпускании: сдвинули - тащим окно, не сдвинули - это клик.
+        # Так окно перетаскивается за любую точку, включая свёрнутую
+        # обложку, по которой иначе звать разворот.
+        self._pressed = self._hit(event.x, event.y)
+        self._press_xy = (event.x, event.y)
+        self._drag_from = (event.x_root - self.gx, event.y_root - self.gy)
+        self._did_drag = False
 
     def _on_release(self, event) -> None:
-        name = getattr(self, "_pressed", None)
+        dragged = self._did_drag
+        name = None if dragged else self._pressed
         self._pressed = None
+        self._drag_from = None
+        self._did_drag = False
         if name is not None and name == self._hit(event.x, event.y):
             self._activate(name)
 
     def _on_drag(self, event) -> None:
         if self._drag_from is None:
             return
+        dx = event.x - self._press_xy[0]
+        dy = event.y - self._press_xy[1]
+        if not self._did_drag and math.hypot(dx, dy) < DRAG_THRESHOLD:
+            return
+        self._did_drag = True
+        self._pressed = None
         self.gx = event.x_root - self._drag_from[0]
         self.gy = event.y_root - self._drag_from[1]
         self._geometry(*self._size())

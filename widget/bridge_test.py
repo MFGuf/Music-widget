@@ -103,6 +103,20 @@ class FakeHost:
     def send(self, message):
         ipc.write_message(self.stream, message)
 
+    def try_send(self, message):
+        """Отправка, которая не роняет набор.
+
+        Виджет вправе закрыть соединение в любой момент - тогда мы хотим
+        увидеть это как проваленную проверку с его состоянием, а не как
+        трассировку, из-за которой отчёт не пишется вовсе.
+        """
+        try:
+            self.send(message)
+            return True
+        except OSError as exc:
+            self.send_error = repr(exc)
+            return False
+
     def seen(self, kind):
         with self.lock:
             return [m for m in self.received
@@ -153,8 +167,10 @@ def main() -> int:
         ok("виджет поздоровался сам", wait_for(lambda: bool(host.seen("hello"))),
            "hello не пришёл")
 
-        host.send({"v": 1, "t": "state", "items": [{"key": "tab:1", "title": "Кино"}],
-                   "selected": "tab:1", "note": "Подключено"})
+        ok("сообщение расширения ушло виджету",
+           host.try_send({"v": 1, "t": "state", "items": [{"key": "tab:1", "title": "Кино"}],
+                          "selected": "tab:1", "note": "Подключено"}),
+           "note=" + worker.note + " ошибка=" + getattr(host, "send_error", ""))
         ok("состояние дошло до очереди", wait_for(lambda: not states.empty()))
         if not states.empty():
             state = states.get_nowait()
@@ -162,9 +178,10 @@ def main() -> int:
             equal("снимок содержит выбранное", state["selected"], "tab:1")
             equal("снимок содержит диагностику", state["note"], "Подключено")
 
-        host.send({"v": 1, "t": "state", "items": [{"key": "tab:2"}],
-                   "selected": "tab:2", "note": "Ещё раз"})
-        ok("второй снимок тоже приходит", wait_for(lambda: not states.empty()))
+        ok("второй снимок отправлен",
+           host.try_send({"v": 1, "t": "state", "items": [{"key": "tab:2"}],
+                          "selected": "tab:2", "note": "Ещё раз"}),
+           "note=" + worker.note + " ошибка=" + getattr(host, "send_error", ""))
         states.queue.clear()
 
         # --- 4. Команды из интерфейса ------------------------------------------
@@ -198,7 +215,9 @@ def main() -> int:
            wait_for(lambda: bool(host2.seen("hello"))),
            "note=" + worker.note + " получено=" + str(host2.received[:2]))
 
-        host2.send({"v": 1, "t": "state", "items": [], "selected": None, "note": "ok"})
+        ok("снимок после переподключения отправлен",
+           host2.try_send({"v": 1, "t": "state", "items": [], "selected": None, "note": "ok"}),
+           "note=" + worker.note)
         ok("после переподключения состояние снова идёт", wait_for(lambda: not states.empty()))
         states.queue.clear()
 
