@@ -40,9 +40,9 @@ from PIL import Image, ImageTk
 
 import theme
 from theme import (
-    ACCENT, ACCENT_HOVER, ACCENT_SOFT, CARD, COVER, DIM, FULL_H, FULL_W,
-    MINI_COVER, MUTED, OVERLAY, OVERLAY_HI, OVERLAY_DIM, ROW_W, TEXT,
-    TRANSPARENT,
+    ACCENT, ACCENT_HOVER, ACCENT_SOFT, CARD, COVER, DIM, EDGE_MARGIN, FULL_H,
+    FULL_W, MINI_COVER, MUTED, OVERLAY, OVERLAY_DIM, OVERLAY_HI, ROW_W,
+    SNAP_DISTANCE, TEXT, TRANSPARENT,
 )
 from bridge_worker import BridgeWorker
 
@@ -53,29 +53,29 @@ FRAME_MS = 50
 # Через сколько секунд без снимков считаем, что расширения нет.
 STALE_AFTER_SEC = 5.0
 
-# Геометрия развёрнутого вида. Полоса прогресса и кнопки сдвинуты вниз:
-# между исполнителем и ними было пустое поле.
+# Геометрия развёрнутого вида. Блок текста сдвинут вниз, а между
+# надписями стало больше воздуха.
 #
-#   44  обложка 120
-#   176 надпись приложения
-#   192 название трека
-#   216 исполнитель
-#   262 полоса прогресса
-#   296 кнопки транспорта
-#   356 заголовок источников
-#   368 строки источников, две по 40
+#   50  обложка 120
+#   184 надпись приложения
+#   204 название трека
+#   234 исполнитель
+#   276 полоса прогресса
+#   308 кнопки транспорта
+#   368 заголовок источников
+#   380 строки источников, две по 38
 #   456 диагностика или спектр
-COVER_Y = 44
-APP_Y = 176
-TITLE_Y = 192
-ARTIST_Y = 216
-PROGRESS_Y = 262
+COVER_Y = 50
+APP_Y = 184
+TITLE_Y = 204
+ARTIST_Y = 234
+PROGRESS_Y = 276
 PROGRESS_H = 5
-TIME_Y = 272
-BUTTONS_Y = 296
-LIST_HEAD_Y = 356
-LIST_Y = 368
-ROW_H = 40
+TIME_Y = 286
+BUTTONS_Y = 308
+LIST_HEAD_Y = 368
+LIST_Y = 380
+ROW_H = 38
 FOOTER_Y = 456
 SPECTRUM_H = 14
 
@@ -149,8 +149,8 @@ class MusicWidget:
         self._wall_photo = ImageTk.PhotoImage(self.wallpaper)
         self._build_covers()
 
-        self.gx = self.root.winfo_screenwidth() - FULL_W - 24
-        self.gy = self.root.winfo_screenheight() - FULL_H - 64
+        self.gx = self.root.winfo_screenwidth() - FULL_W - theme.EDGE_MARGIN
+        self.gy = self.root.winfo_screenheight() - FULL_H - theme.EDGE_MARGIN
         # Без явной геометрии окно появляется в левом верхнем углу:
         # координаты посчитаны, но ещё ни разу не применены.
         self._geometry(FULL_W, FULL_H)
@@ -402,24 +402,27 @@ class MusicWidget:
         )
 
         y = LIST_Y
+        row_height = ROW_H - 4
         for entry in self.items[:MAX_SOURCE_ROWS]:
             picked = item is not None and entry.get("key") == item.get("key")
-            rect = (x0, y, x0 + ROW_W, y + 40)
+            rect = (x0, y, x0 + ROW_W, y + row_height)
             HIT["src:" + str(entry.get("key"))] = rect
             self._rounded_rect(rect, 10, fill=ACCENT_SOFT if picked else OVERLAY_DIM)
 
+            middle = y + row_height / 2
             dot = ACCENT if picked else DIM
-            self.canvas.create_oval(x0 + 10, y + 17, x0 + 16, y + 23, fill=dot, outline="")
+            self.canvas.create_oval(x0 + 10, middle - 3, x0 + 16, middle + 3,
+                                    fill=dot, outline="")
 
             sub = entry.get("app", "")
             if entry.get("artist"):
                 sub += " · " + entry["artist"]
             self.canvas.create_text(
-                x0 + 24, y + 7, text=_clip(entry.get("title") or "Unknown track", 30),
+                x0 + 24, y + 5, text=_clip(entry.get("title") or "Unknown track", 30),
                 font=("Segoe UI", 10, "bold"), fill=TEXT, anchor="nw",
             )
             self.canvas.create_text(
-                x0 + 24, y + 24, text=_clip(sub, 40), font=("Segoe UI", 9),
+                x0 + 24, y + 21, text=_clip(sub, 40), font=("Segoe UI", 9),
                 fill=MUTED, anchor="nw",
             )
             y += ROW_H
@@ -519,7 +522,14 @@ class MusicWidget:
         self._pressed = None
         self._drag_from = None
         self._did_drag = False
-        if name is not None and name == self._hit(event.x, event.y):
+        if dragged:
+            # После перетаскивания окно примыкает к краю, даже если
+            # пользователь отпустил его в паре пикселей от края.
+            w, h = self._size()
+            self._snap_to_edges(w, h)
+            self._keep_on_screen(w, h)
+            self._geometry(w, h)
+        elif name is not None and name == self._hit(event.x, event.y):
             self._activate(name)
 
     def _on_drag(self, event) -> None:
@@ -531,9 +541,12 @@ class MusicWidget:
             return
         self._did_drag = True
         self._pressed = None
+        w, h = self._size()
         self.gx = event.x_root - self._drag_from[0]
         self.gy = event.y_root - self._drag_from[1]
-        self._geometry(*self._size())
+        self._snap_to_edges(w, h)
+        self._keep_on_screen(w, h)
+        self._geometry(w, h)
 
     def _on_right_click(self, event) -> None:
         # В свёрнутом виде кнопок нет вообще - меню это единственный
@@ -571,17 +584,72 @@ class MusicWidget:
     def _size(self) -> tuple[int, int]:
         return (MINI_COVER, MINI_COVER) if self.collapsed else (FULL_W, FULL_H)
 
+    def _screen(self) -> tuple[int, int]:
+        return self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+
+    def _keep_on_screen(self, w: int, h: int) -> None:
+        """Не даёт окну уехать за края так, чтобы его было не найти."""
+        sw, sh = self._screen()
+        self.gx = max(EDGE_MARGIN - w // 2, min(sw - w - EDGE_MARGIN // 2, self.gx))
+        self.gy = max(0, min(sh - 40, self.gy))
+
+    def _nearest_edge(self, w: int, h: int) -> tuple[int, int]:
+        """К какому краю экрана ближе всего окно.
+
+        Нужно для автосвёртывания: свёрнутая карточка должна уезжать к
+        краю, а не оставаться посреди экрана.
+        """
+        sw, sh = self._screen()
+        gaps = {
+            "left": self.gx,
+            "right": sw - (self.gx + w),
+            "top": self.gy,
+            "bottom": sh - (self.gy + h),
+        }
+        edge = min(gaps, key=lambda key: gaps[key])
+        if edge == "left":
+            return EDGE_MARGIN, self.gy
+        if edge == "right":
+            return sw - w - EDGE_MARGIN, self.gy
+        if edge == "top":
+            return self.gx, EDGE_MARGIN
+        return self.gx, sh - h - EDGE_MARGIN
+
+    def _snap_to_edges(self, w: int, h: int) -> None:
+        """Притягивает окно к краям, если оно рядом с ними."""
+        sw, sh = self._screen()
+        if self.gx <= SNAP_DISTANCE:
+            self.gx = EDGE_MARGIN
+        if self.gx + w >= sw - SNAP_DISTANCE:
+            self.gx = sw - w - EDGE_MARGIN
+        if self.gy <= SNAP_DISTANCE:
+            self.gy = EDGE_MARGIN
+        if self.gy + h >= sh - SNAP_DISTANCE:
+            self.gy = sh - h - EDGE_MARGIN
+
+    def _bottom_right(self, w: int, h: int) -> tuple[int, int]:
+        sw, sh = self._screen()
+        return sw - w - EDGE_MARGIN, sh - h - EDGE_MARGIN
+
     def _collapse(self) -> None:
+        # Свёрнутая версия всегда примыкает к краю, где её не закрыть
+        # окнами: по центру экрана её легко потерять из виду.
+        w, h = MINI_COVER, MINI_COVER
+        self.gx, self.gy = self._nearest_edge(w, h)
         self.collapsed = True
-        self._geometry(*self._size())
-        self.canvas.configure(width=MINI_COVER, height=MINI_COVER)
+        self._geometry(w, h)
+        self.canvas.configure(width=w, height=h)
         self._hover = None
         self._render()
 
     def _expand(self) -> None:
+        # Развёрнутая версия всегда встаёт в правый нижний угол: так её
+        # найдёшь сразу, где бы ни оказалась свёрнутая.
+        w, h = FULL_W, FULL_H
+        self.gx, self.gy = self._bottom_right(w, h)
         self.collapsed = False
-        self._geometry(*self._size())
-        self.canvas.configure(width=FULL_W, height=FULL_H)
+        self._geometry(w, h)
+        self.canvas.configure(width=w, height=h)
         self._hover = None
         self._render()
 
