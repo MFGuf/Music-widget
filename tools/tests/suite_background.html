@@ -300,7 +300,7 @@ function tick() {
         return Promise.resolve({ title: "Первый трек", artist: "Первый артист", playing: true, pos: 30, dur: 0, frac: 0.25, bands: [0.1, 0.2] });
       }
       if (tabId === 2) {
-        return Promise.resolve({ title: "Второй трек", artist: "Второй артист", playing: false, pos: 0, dur: 200, frac: 0 });
+        return Promise.resolve({ title: "Второй трек", artist: "Второй артист", playing: false, pos: 0, dur: 200, durExact: true, frac: 0 });
       }
       return Promise.reject(new Error("нет получателя"));
     };
@@ -324,6 +324,8 @@ function tick() {
     assertEqual("tabs: полосы спектра обрезаны до 20", first && first.bands.length, 2);
     assertEqual("tabs: источник назван VK Музыка", first && first.app, "VK Музыка");
     assertEqual("tabs: длительность из вкладки", second && second.dur, 200);
+    assertEqual("tabs: длительность из вкладки помечена точной", second && second.dur_exact, true);
+    assertEqual("tabs: невзведённая длительность игнорируется", first && first.dur, 0);
     assert("tabs: ключ кэша содержит вкладку и трек",
       first && first.ck === "1|Первый трек|Первый артист", first && first.ck);
 

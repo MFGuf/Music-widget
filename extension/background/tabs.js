@@ -128,9 +128,14 @@ function buildItem(source, state) {
   const title = trimText(state.title || source.title || "Unknown track", 200);
   const artist = trimText(state.artist || "", 200);
 
-  // Данные из VK API точнее, чем DOM: там лежит настоящая длительность.
+  // Длительность берём только точную: из ответа VK API (там она есть
+  // всегда) либо из media.duration. Оценку по скорости ползунка не
+  // используем намеренно - в свёрнутой вкладке она завышает длительность
+  // в разы, а это хуже, чем не показывать её вовсе.
   const meta = store.trackMeta.get(makeCacheKey(source.tabId, title, artist));
-  const dur = meta && meta.durExact ? meta.dur : (Number(state.dur) || 0);
+  const fromApi = meta && meta.durExact && meta.dur > 0;
+  const fromMedia = state.durExact && Number(state.dur) > 0;
+  const dur = fromApi ? meta.dur : (fromMedia ? Number(state.dur) : 0);
 
   return {
     key: key,
@@ -141,7 +146,7 @@ function buildItem(source, state) {
     playing: !!state.playing,
     pos: Math.max(0, Number(state.pos) || 0),
     dur: dur,
-    dur_exact: !!(meta && meta.durExact),
+    dur_exact: !!(fromApi || fromMedia),
     frac: clamp01(state.frac),
     art: "",
     art_new: false,

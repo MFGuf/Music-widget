@@ -176,6 +176,83 @@ window.__token = "тестовый-токен";
     assert("page: сообщение с чужим токеном не получает ответа", leaked === null,
       JSON.stringify(leaked));
 
+    // --- позиция и длительность ------------------------------------------------
+
+    // Медиаэлемент с известной длительностью - самый точный источник.
+    var a1 = mockPlayer({ position: 90, duration: 245, playing: true });
+    st = await ask("getState", null);
+    assertEqual("page: позиция взята из currentTime", st.pos, 90);
+    assertEqual("page: длительность взята из media.duration", st.dur, 245);
+    assertEqual("page: длительность помечена точной", st.durExact, true);
+    assert("page: доля посчитана от длительности",
+      Math.abs(st.frac - 90 / 245) < 0.01, "доля " + st.frac);
+
+    // currentTime всегда задаётся от 0 и не превышает duration.
+    a1.currentTime = 245;
+    st = await ask("getState", null);
+    assertEqual("page: позиция в конце трека", st.pos, 245);
+    assert("page: доля не больше единицы", st.frac <= 1, "доля " + st.frac);
+
+    a1.currentTime = 300;
+    st = await ask("getState", null);
+    assertEqual("page: currentTime больше длительности не ломает долю", st.frac, 1);
+
+    // Длительности нет (поток без метаданных) - точной её не считаем.
+    var a2 = mockPlayer({ position: 42, duration: 0, playing: true });
+    st = await ask("getState", null);
+    assertEqual("page: без длительности доля не выдумывается", st.frac, 0);
+    assertEqual("page: без длительности она не точна", st.durExact, false);
+
+    // Перемотка через сеттер currentTime запоминается.
+    a2.currentTime = 100;
+    st = await ask("getState", null);
+    assertEqual("page: перемотка видна сразу", st.pos, 100);
+    assertEqual("page: перемотка запомнена как подсказка", st.seekHint, 100);
+
+    // Без медиаэлемента позиция считается по ползунку и реальным часам.
+    document.body.innerHTML =
+      '<div class="track-name"><div class="track-name__title">Трек с ползунком</div></div>' +
+      '<div role="slider" aria-label="позиция воспроизведения" aria-valuenow="25" ' +
+      'style="width:300px;height:4px"></div>';
+    st = await ask("getState", null);
+    assert("page: без audio доля берётся из ползунка",
+      st.frac > 0.2 && st.frac < 0.3, "доля " + st.frac);
+    assertEqual("page: без audio длительность неизвестна", st.dur, 0);
+    assertEqual("page: без audio прошедшее время не выдумывается", st.pos, 0);
+
+    // Ползунок в процентах (0..100) приводится к доле.
+    document.querySelector("[role='slider']").setAttribute("aria-valuenow", "75");
+    st = await ask("getState", null);
+    assert("page: ползунок в процентах переведён в долю",
+      st.frac > 0.7 && st.frac < 0.8, "доля " + st.frac);
+
+    // Прошедшее время растёт по реальным часам, а не по опросам.
+    document.querySelector("[role='slider']").setAttribute("aria-valuenow", "30");
+    await ask("getState", null);
+    await new Promise(function (r) { setTimeout(r, 350); });
+    var later = await ask("getState", null);
+    assert("page: прошедшее время идёт по часам",
+      later.pos > 0.1, "прошло " + later.pos);
+
+    // Ползунок на 1.0 при остановке - это простой, а не конец трека.
+    // Раньше в наборе был вызван play(), поэтому возвращаем плеер в паузу:
+    // без этого состояние "играет" ещё держится и ползунок на 100% считается
+    // концом трека.
+    // play() возвращает промис, а pause() - нет.
+    el.pause();
+    document.querySelector("[role='slider']").setAttribute("aria-valuenow", "100");
+    st = await ask("getState", null);
+    assertEqual("page: ползунок на 100% при паузе обнуляется", st.frac, 0);
+    assertEqual("page: после паузы playing снимается", st.playing, false);
+
+    // Узкие элементы управления (громкость) ползунком позиции не считаются.
+    document.body.innerHTML =
+      '<div class="track-name"><div class="track-name__title">Только громкость</div></div>' +
+      '<div role="slider" aria-label="громкость" aria-valuenow="50" ' +
+      'style="width:24px;height:24px"></div>';
+    st = await ask("getState", null);
+    assertEqual("page: узкий слайдер громкости проигнорирован", st.frac, 0);
+
     // --- команды: пока не реализованы ---------------------------------------
 
     var res = await ask("cmd", { action: "toggle" });

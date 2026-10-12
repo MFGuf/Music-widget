@@ -284,12 +284,144 @@
     return playback.playing;
   }
 
+  // --- позиция воспроизведения -------------------------------------------------
+
+  // Главное отличие от прошлой версии (CDP): currentTime у медиаэлемента
+  // считается по медиа-часам, а не по таймерам страницы. В свёрнутой вкладке
+  // Firefox душит setInterval, но часы аудио продолжают идти - поэтому
+  // позиция всегда точная и не откатывается назад.
+
+  // Счёт прошедшего времени нужен только когда медиаэлемента нет вообще
+  // (плеер на WebAudio) и известна лишь доля.
+  const elapsed = {
+    key: null,
+    startedAt: 0,
+    pausedMs: 0,
+    lastFrac: 0,
+    lastSeen: 0,
+  };
+
+  function trackElapsed(trackKey, frac, playing, now) {
+    if (elapsed.key !== trackKey) {
+      elapsed.key = trackKey;
+      elapsed.startedAt = now;
+      elapsed.pausedMs = 0;
+      elapsed.lastFrac = frac;
+      elapsed.lastSeen = now;
+      return 0;
+    }
+    const lastSeen = elapsed.lastSeen;
+    // Новый трек начался с нуля - прежний отсчёт больше не подходит.
+    if (frac < 0.02 && elapsed.lastFrac >= 0.02) {
+      elapsed.startedAt = now;
+      elapsed.pausedMs = 0;
+    } else if (playing && lastSeen > 0 && now - lastSeen > 0.4 && frac <= elapsed.lastFrac) {
+      // Доля не идёт - пауза или буферизация. Время на паузе не считаем,
+      // иначе после перемотки время уехало бы далеко вперёд.
+      elapsed.pausedMs += now - lastSeen;
+    }
+    elapsed.lastFrac = frac;
+    elapsed.lastSeen = now;
+    return Math.max(0, now - elapsed.startedAt - elapsed.pausedMs);
+  }
+
+  // Ползунок позиции. Их на странице несколько, и нужен тот, который
+  // РЕАЛЬНО движется, поэтому запоминаем, какой из них изменился между
+  // двумя опросами.
+  const sliderWatch = {
+    prev: null,
+    movingIndex: -1,
+  };
+
+  function listSliders() {
+    const nodes = document.querySelectorAll("[role='slider'],[aria-valuenow],input[type='range']");
+    const out = [];
+    for (const el of nodes) {
+      const rect = el.getBoundingClientRect();
+      // Широкий и низкий - так выглядит шкала позиции; узкие и круглые
+      // элементы - это громкость и прочее.
+      if (rect.width < 60 || rect.height > 48 || rect.height <= 0) {
+        continue;
+      }
+      let value = parseFloat(el.getAttribute("aria-valuenow"));
+      if (el.tagName === "INPUT") {
+        value = parseFloat(el.value);
+      }
+      if (!isFinite(value)) {
+        value = 0;
+      }
+      out.push({ value: value, rect: rect, el: el, label: (el.getAttribute("aria-label") || "") + " " + classText(el) });
+    }
+    return out;
+  }
+
+  function pickSlider() {
+    const list = listSliders();
+    if (!list.length) {
+      return null;
+    }
+    const prev = sliderWatch.prev;
+    if (prev && prev.length === list.length) {
+      for (let i = 0; i < list.length; i++) {
+        if (Math.abs(list[i].value - prev[i]) > 0.01) {
+          sliderWatch.movingIndex = i;
+          break;
+        }
+      }
+    }
+    sliderWatch.prev = list.map((x) => x.value);
+
+    let index = sliderWatch.movingIndex;
+    if (index < 0 || !list[index]) {
+      const byLabel = list.findIndex((x) => /позици|воспроизвед|position|progress|seek|перемот/i.test(x.label));
+      index = byLabel >= 0 ? byLabel : 0;
+    }
+    const chosen = list[index];
+    // Значение приходит то в долях (0..1), то в процентах (0..100),
+    // хотя aria-valuemax при этом часто равен 1.
+    const raw = chosen.value;
+    const frac = raw > 1.5 ? raw / 100 : raw;
+    return {
+      frac: Math.max(0, Math.min(1, frac)),
+      rect: chosen.rect,
+      el: chosen.el,
+    };
+  }
+
+  function readPosition(media, playing, trackKey, now) {
+    if (media) {
+      const pos = Math.max(0, Number(media.currentTime) || 0);
+      const raw = Number(media.duration);
+      const dur = isFinite(raw) && raw > 0 ? raw : 0;
+      if (dur > 0) {
+        return { pos: pos, dur: dur, durExact: true, frac: Math.max(0, Math.min(1, pos / dur)) };
+      }
+      return { pos: pos, dur: 0, durExact: false, frac: 0 };
+    }
+
+    const slider = pickSlider();
+    const frac = slider ? slider.frac : 0;
+    // Плеер может держать ползунок на 1.0, когда ничего не играет: это не
+    // конец трека, а простой.
+    const idle = !playing && frac > 0.999;
+    const effectiveFrac = idle ? 0 : frac;
+    return {
+      pos: trackElapsed(trackKey, effectiveFrac, playing, now),
+      dur: 0,
+      durExact: false,
+      frac: effectiveFrac,
+    };
+  }
+
   // --- сборка состояния -------------------------------------------------------
 
   function buildState() {
     const media = bestMedia();
     const text = readTrackText();
     const playing = detectPlaying(media);
+    const trackKey = text.title + "|" + text.artist;
+    const where = readPosition(media, playing, trackKey, Date.now());
+
     return {
       title: text.title,
       artist: text.artist,
@@ -298,10 +430,10 @@
       hasMedia: !!media || playback.playing || playback.playCount > 0,
       hasPlayButton: !!playButtonState(),
       url: location.href,
-      // Поля позиции заполняются в следующем коммите (задача 8).
-      pos: media ? Number(media.currentTime) || 0 : 0,
-      dur: media && isFinite(media.duration) ? Number(media.duration) || 0 : 0,
-      frac: 0,
+      pos: where.pos,
+      dur: where.dur,
+      durExact: where.durExact,
+      frac: where.frac,
       bands: [],
       seekHint: seekHint,
       seekAt: seekAt,
