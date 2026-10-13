@@ -366,12 +366,13 @@ assert("page: fetch перехвачен", hooked !== window.__origFetch);
 assert("page: XHR.open перехвачен",
   window.XMLHttpRequest.prototype.open !== window.__origXhrOpen);
 
-function apiCall(url, payload) {
+function apiCall(url, payload, body) {
   window.__fetchPayload = payload || { response: { items: [] } };
   window.__fetchCalls.length = 0;
-  return window.fetch(url).then(function () {
-    return new Promise(function (r) { setTimeout(r, 30); });
-  });
+  return window.fetch(url, body ? { method: "POST", body: body } : undefined)
+    .then(function () {
+      return new Promise(function (r) { setTimeout(r, 30); });
+    });
 }
 
 var apiPayload = {
@@ -469,6 +470,51 @@ mockPlayer({ title: "Моя музыка", artist: "", media: false, noCover: tr
 st = await ask("getState", null);
 assertEqual("page: список треков не вытесняет текущий трек", st.title, "Переимен");
 assertEqual("page: длительность не сбилась на длину плейлиста", st.dur, 245);
+
+// Ответ с ОДНИМ треком узнаётся по форме, даже если метода в адресе нет:
+// VK ходит через execute с act=..., и имя audio.get там не встречается.
+await apiCall("https://api.vk.com/method/execute", {
+  response: {
+    title: "По форме", artist: "Оркестр", duration: 199,
+    thumb_src: "https://sun1-96.userapi.com/shape.jpg",
+  },
+}, "act=do_play");
+mockPlayer({ title: "Моя музыка", artist: "", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: одиночный ответ узнан по форме, без имени метода",
+  st.title, "По форме");
+assertEqual("page: обложка одиночного ответа", st.coverUrl,
+  "https://sun1-96.userapi.com/shape.jpg");
+
+// Плеер VK держит звук ВНЕ страницы: new Audio() без appendChild.
+// Наш хук play() видит такой элемент, а поиск по странице - нет.
+// Проверяем именно этот случай: элемента в документе нет вовсе.
+mockPlayer({ title: "Переимен", artist: "Кино", media: false });
+
+var outside = document.createElement("audio");
+outside.src = "https://vk.com/track.mp3";
+Object.defineProperty(outside, "duration", { value: 275, configurable: true });
+Object.defineProperty(outside, "paused", { value: false, configurable: true });
+Object.defineProperty(outside, "readyState", { value: 4, configurable: true });
+// Вызываем play() так, чтобы сработал НАШ хук: он и должен увидеть
+// элемент. Подменять метод поверх хука нельзя - тогда мы проверим не то.
+window.HTMLMediaElement.prototype.play.call(outside);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+var hooked = await ask("getState", null);
+assertEqual("page: элемент, пойманный в play(), найден и без него в DOM",
+  hooked.dur, 275);
+
+// Элемент намеренно остаётся: он имитирует звук VK, который живёт вне
+// страницы. Проверка на его убор невозможна и бессмысленна: элемент,
+// которого нет в документе, и ушедший со страницы неразличимы снаружи -
+// оба просто не находятся поиском. Различает их лишь то, играет ли он
+// ещё. Поэтому и гасим его честно, через паузу.
+Object.defineProperty(outside, "paused", { value: true, configurable: true });
+var pausedState = await ask("getState", null);
+assert("page: остановленный звук больше не считается играющим",
+  !pausedState.diag || pausedState.diag.media === false,
+  JSON.stringify(pausedState.diag));
 
 // Вложенный ответ execute.multiple разбирается так же.
 await apiCall("https://api.vk.com/method/execute.multiple", {

@@ -34,6 +34,9 @@
     playing: false,
     playCount: 0,
     hooked: false,
+    // Элемент, на котором вызвали play(). Плеер VK держит звук вне
+    // страницы, и иначе до него не добраться.
+    element: null,
   };
 
   function hookMediaPrototypes() {
@@ -49,6 +52,11 @@
     proto.play = function () {
       playback.playing = true;
       playback.playCount++;
+      // Плеер VK создаёт звук через new Audio() и никогда не вставляет
+      // элемент в страницу, поэтому querySelectorAll его не видит. Здесь
+      // мы получаем его из хука - единственного места, где он доступен.
+      // Без этого у нас не было ни длительности, ни позиции.
+      rememberPlayingElement(this);
       return origPlay.apply(this, arguments);
     };
     proto.pause = function () {
@@ -186,7 +194,24 @@ function isSingleTrackRequest(url) {
     return /audio\.get\b/i.test(String(url || ""));
   }
 
-  function absorbApiText(text, url) {
+  // Имя метода VK прячет в теле запроса: у execute это act=... или code=...,
+  // а в адресе остаётся только /method/execute. Без тела мы такой вызов
+  // не узнаём и решаем, что "текущего" трека не было.
+  function requestBody(init) {
+    try {
+      if (!init || typeof init !== "object") {
+        return "";
+      }
+      if (typeof init.body === "string") {
+        return init.body.substring(0, 2000);
+      }
+    } catch (e) {
+      // Тело бывает FormData и прочим - это не наш случай, молча пропускаем.
+    }
+    return "";
+  }
+
+  function absorbApiText(text, url, body) {
     if (!text || text.length > MAX_API_TEXT) {
       return;
     }
@@ -200,12 +225,22 @@ function isSingleTrackRequest(url) {
     } catch (e) {
       return;
     }
-    const single = isSingleTrackRequest(url);
-    // Текущим треком считаем первый подходящий объект верхнего уровня:
-    // в ответе audio.get он лежит в response, а не в глубине списка.
+
+    // Ответ про ОДИН трек узнаётся по форме, а не по имени метода: в нём
+    // лежит объект с названием и длительностью, а не массив items. Так
+    // правило работает независимо от того, как VK назовёт запрос сегодня:
+    // замерялось audio.get, а приходит execute с act=do_play.
+    const byName = isSingleTrackRequest(url) || isSingleTrackRequest(body);
+    const response = json && json.response;
+    const byShape = !!response && typeof response === "object"
+      && !Array.isArray(response)
+      && typeof response.title === "string" && response.title
+      && Number(response.duration) > 0;
+    const single = byName || byShape;
+
     absorbApiJson(json, 0, single);
-    if (single && json && json.response && typeof json.response === "object") {
-      absorbApiJson(json.response, 0, true);
+    if (single && response && typeof response === "object") {
+      absorbApiJson(response, 0, true);
     }
   }
 
@@ -259,6 +294,7 @@ function looksLikeApi(url) {
         if (!looksLikeApi(url)) {
           return origFetch.apply(this, args);
         }
+        const body = requestBody(args[1]);
         noteApiHit(url);
         return origFetch.apply(this, args).then(function (response) {
           try {
@@ -266,7 +302,7 @@ function looksLikeApi(url) {
             // для самой страницы.
             const copy = response.clone();
             copy.text().then(function (text) {
-              absorbApiText(text, url);
+              absorbApiText(text, url, body);
             }, function () {});
           } catch (e) {
             // Тело уже прочитано страницей - просто пропускаем.
@@ -286,12 +322,13 @@ function looksLikeApi(url) {
       };
       XHRProto.send = function () {
         const self = this;
+        const body = requestBody(arguments[0]);
         if (looksLikeApi(self.__mwUrl)) {
           noteApiHit(self.__mwUrl);
           self.addEventListener("load", function () {
             try {
               if (self.responseType === "" || self.responseType === "text") {
-                absorbApiText(self.responseText, self.__mwUrl);
+                absorbApiText(self.responseText, self.__mwUrl, body);
               }
             } catch (e) {
               // responseText недоступен для не-текстовых ответов.
@@ -492,12 +529,36 @@ function looksLikeApi(url) {
     return out;
   }
 
+  function rememberPlayingElement(el) {
+    if (!el || typeof el !== "object") {
+      return;
+    }
+    playback.element = el;
+  }
+
   // Тот самый элемент, который сейчас звучит. Их на странице может быть
   // несколько - VK держит готовые плееры под очереди.
   function bestMedia() {
     const list = mediaElements();
     const playing = list.find((el) => !el.paused && !el.ended && el.readyState >= 2);
-    return playing || list[0] || null;
+    if (playing) {
+      playback.element = playing;
+      return playing;
+    }
+    // Пойманный в play() элемент выручает, когда звука нет в документе: так
+    // работает плеер VK (new Audio без appendChild). Условие readyState
+    // здесь не украшение: у элемента, который реально играет, есть
+    // загруженные данные, а у покойного или выброшенного страницей их нет.
+    // Без этого мы держались бы за потухший элемент вместо отсутствующего.
+    const hooked = playback.element;
+    if (hooked && !hooked.paused && !hooked.ended && hooked.readyState >= 2) {
+      return hooked;
+    }
+    if (list.length) {
+      return list[0];
+    }
+    // Ни живых элементов, ни надёжного пойманного - значит звука нет.
+    return null;
   }
 
   // --- признак воспроизведения ----------------------------------------------
