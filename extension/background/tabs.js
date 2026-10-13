@@ -10,6 +10,20 @@
 let pollTimer = null;
 let polling = false;
 
+// Почему вкладка молчит. Без этого виджет говорит «вкладка не отвечает»
+// одинаково и в том случае, когда скрипт не внедрён, и в том, когда не
+// отвечает скрипт главного мира, - а чинить это нужно по-разному.
+const tabProblems = new Map();
+
+function setTabProblem(tabId, reason) {
+  tabProblems.set(tabId, reason);
+}
+
+function tabProblem() {
+  const first = tabProblems.values().next();
+  return first.done ? "" : first.value;
+}
+
 async function pollTabs() {
   // Опрос занимает время (запрос к каждой вкладке), а интервал короче
   // этого времени. Без защиты запросы накапливались бы.
@@ -74,6 +88,13 @@ async function refreshSources() {
     source.state = states[index++];
     source.ready = !!source.state;
   }
+  // Проблемы вкладок, которых больше нет, держать нельзя: они всплыли бы
+  // в подписи после того, как вкладку закрыли.
+  for (const tabId of Array.from(tabProblems.keys())) {
+    if (!next.has(tabId)) {
+      tabProblems.delete(tabId);
+    }
+  }
 
   store.sources = next;
 }
@@ -81,11 +102,18 @@ async function refreshSources() {
 async function requestState(tabId) {
   try {
     const reply = await browser.tabs.sendMessage(tabId, { t: "poll" });
-    return reply && typeof reply === "object" ? reply : null;
+    if (reply && typeof reply === "object") {
+      tabProblems.delete(tabId);
+      return reply;
+    }
+    // Скрипт вкладки на месте, но скрипт главного мира не отвечает.
+    setTabProblem(tabId, "скрипт страницы VK не отвечает");
+    return null;
   } catch (e) {
-    // Самая частая причина: content script в этой вкладке ещё не создан -
-    // страница была открыта до установки расширения или после его
-    // обновления. Лечится дозапуском скрипта, см. injectIntoOpenTabs().
+    // Content script в этой вкладке не создан: страница была открыта до
+    // установки расширения или до его обновления. Лечится перезагрузкой
+    // вкладки, а дозапуск скрипта - вызовом injectIntoOpenTabs().
+    setTabProblem(tabId, "скрипт вкладки не внедрён - обновите вкладку");
     return null;
   }
 }

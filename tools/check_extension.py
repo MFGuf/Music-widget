@@ -84,8 +84,39 @@ def check_manifest():
     for size, icon in manifest.get("icons", {}).items():
         check((EXT / icon).exists(), "нет иконки %s (%s)" % (icon, size))
 
+    check_web_accessible(manifest)
     check_background_scripts(manifest)
     return manifest
+
+
+def check_web_accessible(manifest):
+    """Скрипт главного мира обязан быть виден странице.
+
+    content/vk.js вставляет page/page.js тегом <script> как moz-extension://
+    URL. Пока файл не объявлен в web_accessible_resources, Firefox его
+    странице не отдаёт: подгрузка молча проваливается, скрипт главного мира
+    не стартует, а виджет показывает «вкладка не отвечает» без причины.
+    """
+    allowed = manifest.get("web_accessible_resources") or []
+    # В MV2 это список строк, в MV3 - список объектов с matches. Разбираем
+    # оба вида, чтобы проверка не сломалась при переходе.
+    paths = []
+    for entry in allowed:
+        paths.append(entry if isinstance(entry, str) else entry.get("resources", []))
+
+    content_dir = EXT / "content"
+    for script in sorted(content_dir.glob("*.js")):
+        text = script.read_text(encoding="utf-8")
+        for match in re.finditer(r'getURL\(\s*"([^"]+)"\s*\)', text):
+            target = match.group(1)
+            if not (EXT / target).exists():
+                check(False, "%s грузит %s, которого нет" % (script.name, target))
+            if target not in paths:
+                check(False,
+                      "%s грузит %s в страницу, но %s не объявлен в "
+                      "web_accessible_resources: Firefox не отдаст файл "
+                      "странице, и обмен не поднимется"
+                      % (script.name, target, target))
 
 
 def check_background_scripts(manifest):

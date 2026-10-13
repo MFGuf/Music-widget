@@ -49,6 +49,13 @@ function randomToken() {
 // сообщений ещё не существует. Поэтому инициализация выносится в обработчик
 // load - если отправить init сразу после appendChild, он уйдёт в пустоту и
 // обмен не поднимется до перезагрузки страницы.
+// Скрипт страницы грузится как moz-extension:// и обязан быть объявлен в
+// web_accessible_resources манифеста, иначе Firefox не отдаст его странице:
+// подгрузка молча провалится, событие load не наступит, и виджет будет
+// молчать без всякой причины. Поэтому ждём не только загрузку, но и
+// явную неудачу.
+const SCRIPT_LOAD_TIMEOUT_MS = 4000;
+
 function injectPageScript() {
   const root = document.head || document.documentElement;
   if (!root) {
@@ -62,9 +69,26 @@ function injectPageScript() {
   // запускает только будучи добавленным в DOM.
   script.async = false;
   script.addEventListener("load", () => {
+    clearTimeout(guard);
     script.remove();
     initPageScript();
   });
+  script.addEventListener("error", () => {
+    clearTimeout(guard);
+    script.remove();
+    reportBlocked("страница не отдала скрипт (проверьте web_accessible_resources)");
+  });
+  // Если ни load, ни error не пришли - значит подгрузку съела политика
+  // безопасности страницы. Молчать здесь нельзя: пользователь видит
+  // «вкладка не отвечает» и не понимает, что делать.
+  const guard = setTimeout(() => {
+    try {
+      script.remove();
+    } catch (e) {
+      // Уже отсоединён - ничего страшного.
+    }
+    reportBlocked("скрипт страницы не загрузился, вероятно мешает политика безопасности");
+  }, SCRIPT_LOAD_TIMEOUT_MS);
   root.appendChild(script);
 }
 
