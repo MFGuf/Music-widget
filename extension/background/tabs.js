@@ -191,6 +191,8 @@ function buildItem(source, state) {
     bands: Array.isArray(state.bands) ? state.bands.slice(0, 20) : [],
     url: source.url,
     tabId: source.tabId,
+    // Диагностика с вкладки - виджет покажет, откуда взялось название.
+    diag: state.diag && typeof state.diag === "object" ? state.diag : null,
   };
 }
 

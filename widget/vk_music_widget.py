@@ -773,10 +773,37 @@ class MusicWidget:
             ("Вкладок VK", str(len(self.items))),
             ("Выбрана", str(self.selected)),
             ("Сейчас играет", str(current.get("title") or "—")),
+            ("Название из", self._title_source(current)),
+            ("Ответов VK API", self._api_summary(current)),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
             ("Журнал", str(journal.path())),
         ]
+
+    @staticmethod
+    def _title_source(item) -> str:
+        """Откуда взялось название: из ответа VK API или из вёрстки.
+
+        Разница видна глазом: если вёрстка, то вместо песни почти всегда
+        показывается заголовок раздела - «Моя музыка», «Рекомендации».
+        """
+        diag = (item or {}).get("diag") or {}
+        if "titleSource" in diag:
+            return "API" if diag.get("fromApi") else "вёрстки страницы"
+        return "неизвестно"
+
+    @staticmethod
+    def _api_summary(item) -> str:
+        """Сколько ответов VK API перехватили и откуда взялось название."""
+        diag = (item or {}).get("diag") or {}
+        if not diag:
+            return "нет данных"
+        parts = ["%d ответов" % int(diag.get("apiHits") or 0)]
+        if diag.get("apiTracks"):
+            parts.append("треков в кэше %d" % int(diag["apiTracks"]))
+        if diag.get("media"):
+            parts.append("есть аудиоэлемент")
+        return ", ".join(parts)
 
     def _show_status(self) -> None:
         """Окно со статусом и хвостом журнала.

@@ -81,9 +81,17 @@
   // бы дважды на каждый вызов. Общее состояние даёт один хук на страницу.
   // Хук держит ссылку на absorbApiText первой копии, но метаданные лежат в
   // общем объекте - поэтому найденное ею не теряется после обновления.
-  const apiState = window.__musicWidgetApiState ||
-    (window.__musicWidgetApiState = { meta: new Map(), hooked: false });
-  const apiMeta = apiState.meta;
+const apiState = window.__musicWidgetApiState ||
+    (window.__musicWidgetApiState = {
+      meta: new Map(),
+      hooked: false,
+      current: null,
+      hits: 0,
+      lastUrls: [],
+      seenAudio: false,
+      seenDuration: false,
+    });
+const apiMeta = apiState.meta;
 
   // Ответы больших плейлистов весят мегабайты - такие разбирать незачем.
   const MAX_API_TEXT = 4 * 1024 * 1024;
@@ -205,6 +213,17 @@
     return /(^|\/\/)api\.vk\.(com|ru)\/method\//i.test(String(url || ""));
   }
 
+  // Счётчик перехваченных ответов и последние адреса. Нужны для диагностики:
+  // без них не отличить "VK не отдаёт трек в API" от "мы его не видим",
+  // а чинить это приходится вслепую.
+  function noteApiHit(url) {
+    apiState.hits += 1;
+    apiState.lastUrls.push(String(url).substring(0, 120));
+    if (apiState.lastUrls.length > 5) {
+      apiState.lastUrls.shift();
+    }
+  }
+
   function requestUrl(input) {
     try {
       if (typeof input === "string") {
@@ -233,6 +252,7 @@
         if (!looksLikeApi(url)) {
           return origFetch.apply(this, args);
         }
+        noteApiHit(url);
         return origFetch.apply(this, args).then(function (response) {
           try {
             // Клонируем ДО чтения: оригинал должен остаться нетронутым
@@ -260,6 +280,7 @@
       XHRProto.send = function () {
         const self = this;
         if (looksLikeApi(self.__mwUrl)) {
+          noteApiHit(self.__mwUrl);
           self.addEventListener("load", function () {
             try {
               if (self.responseType === "" || self.responseType === "text") {
@@ -909,6 +930,19 @@
       durExact: durExact,
       frac: where.frac,
       bands: readBands(),
+      // Диагностика для виджета: по ней видно, откуда взялись данные и
+      // почему названия может не быть. Без неё приходится гадать, что
+      // именно сломалось: VK не отдаёт трек в API или мы его не видим.
+      diag: {
+        apiHits: apiState.hits,
+        apiUrls: apiState.lastUrls.slice(-3),
+        apiTracks: apiMeta.size,
+        fromApi: !!text.fromApi,
+        hasCurrent: !!apiState.current,
+        media: !!media,
+        mediaDuration: where.durExact ? dur : 0,
+        titleSource: text.fromApi ? "api" : "страница",
+      },
     };
   }
 

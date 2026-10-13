@@ -36,6 +36,16 @@ function note() {
     const reason = tabProblem();
     return reason ? reason : "Вкладка VK Музыки ещё не отвечает";
   }
+
+  // Название взято из разметки, хотя трек играет: почти наверняка это
+  // заголовок раздела. Говорим об этом прямо и показываем, что удалось
+  // перехватить, - иначе непонятно, куда копать.
+  const item = store.lastItems[0];
+  const diag = item && item.diag;
+  if (diag && !diag.fromApi && !diag.media) {
+    return "Ответов VK API: " + (diag.apiHits || 0) +
+      " - играет фон, а название не нашлось";
+  }
   return lastError ? lastError : "Подключено";
 }
 
