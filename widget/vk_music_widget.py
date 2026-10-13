@@ -87,6 +87,10 @@ MAX_SOURCE_ROWS = 2
 # Всё большее - перетаскивание окна.
 DRAG_THRESHOLD = 4
 
+# Насколько полоса прогресса ловит нажатие шире, чем нарисована. Сама полоска
+# тонкая, а промах по краю означал бы, что перемотать нельзя.
+SEEK_GRAB = 6
+
 HEAD_SIZE = 28
 HEAD_Y = 10
 TRANSPORT = theme.BTN
@@ -129,6 +133,10 @@ class MusicWidget:
         self._press_xy = (0, 0)
         self._did_drag = False
         self._drag_from = None
+        # Перемотка мышью: пока идёт протяжка, доля меняется в полосе, а
+        # команду отправляем один раз - в отпускании.
+        self._seeking = False
+        self._seek_ratio: float | None = None
 
         self._build()
         self.bridge.start()
@@ -249,6 +257,44 @@ class MusicWidget:
         limit = self._cur_dur or float("inf")
         return min(limit, self._pos_anchor + (now - self._pos_anchor_at))
 
+    def _progress_frac(self, item, dur: float) -> float:
+        """Доля пройденного для полосы.
+
+        Незавершённая перемотка важнее расчёта по часам: пока расширение не
+        прислало новый снимок, показываем то, куда попросили, а не где было.
+        Иначе полоса дёрнулась бы назад в момент нажатия.
+        """
+        if self._seek_ratio is not None:
+            return self._seek_ratio
+        if dur > 0:
+            return max(0.0, min(1.0, self._position(item) / dur))
+        return max(0.0, min(1.0, float(item.get("frac") or 0)))
+
+    def _seek_ratio_at(self, x: int) -> float:
+        """Доля трека под курсором.
+
+        Область нажатия шире полосы, поэтому x может выйти за её границы -
+        значение зажимается в 0..1.
+        """
+        x0 = (FULL_W - ROW_W) // 2
+        return max(0.0, min(1.0, (x - x0) / ROW_W))
+
+    def _seek_scrub(self, x: int) -> None:
+        """Показать, куда попадёт трек, пока мышь ещё нажата.
+
+        Команду не отправляем: перемотка в браузере слоёная и стоит дорого,
+        а во время протяжки событий идёт десяток в секунду.
+        """
+        if self._current() is None:
+            return
+        self._seek_ratio = self._seek_ratio_at(x)
+        self._render()
+
+    def _send_seek(self) -> None:
+        if self._seek_ratio is None or self._current() is None:
+            return
+        self.bridge.send("seek", self.selected, self._seek_ratio)
+
     def _drain_states(self) -> bool:
         changed = False
         while True:
@@ -260,6 +306,9 @@ class MusicWidget:
             self.selected = state.get("selected")
             self.note = state.get("note") or ""
             self.last_state_at = time.monotonic()
+            # Новый снимок отменяет недовыполненную перемотку: браузер уже
+            # отчитался о реальном положении дел, доверять ему надо.
+            self._seek_ratio = None
             changed = True
 
     # --- отрисовка ---------------------------------------------------------------
@@ -389,24 +438,25 @@ class MusicWidget:
             fill=OVERLAY_HI, outline="",
         )
 
+        # Область нажатия шире самой полоски: ровно в PROGRESS_H пикселей
+        # попасть мышью невозможно, а промах по краю означал бы, что
+        # перемотки нет вовсе.
+        HIT["seek"] = (x0, PROGRESS_Y - SEEK_GRAB, x1, PROGRESS_Y + PROGRESS_H + SEEK_GRAB)
+
         if item is None:
             label = "0:00"
         else:
             pos = self._position(item)
             dur = float(item.get("dur") or 0)
+            frac = self._progress_frac(item, dur)
+            if frac > 0:
+                self.canvas.create_rectangle(
+                    x0, PROGRESS_Y, x0 + ROW_W * frac, PROGRESS_Y + PROGRESS_H,
+                    fill=ACCENT, outline="",
+                )
             if dur > 0:
-                frac = max(0.0, min(1.0, pos / dur))
-                self.canvas.create_rectangle(
-                    x0, PROGRESS_Y, x0 + ROW_W * frac, PROGRESS_Y + PROGRESS_H,
-                    fill=ACCENT, outline="",
-                )
-                label = f"{theme.fmt_time(pos)} / {theme.fmt_time(dur)}"
+                label = f"{theme.fmt_time(frac * dur)} / {theme.fmt_time(dur)}"
             else:
-                frac = max(0.0, min(1.0, float(item.get("frac") or 0)))
-                self.canvas.create_rectangle(
-                    x0, PROGRESS_Y, x0 + ROW_W * frac, PROGRESS_Y + PROGRESS_H,
-                    fill=ACCENT, outline="",
-                )
                 # Длительности VK Музыка не отдаёт - показываем прошедшее
                 # время, а не выдуманное "из".
                 label = theme.fmt_time(pos)
@@ -571,7 +621,22 @@ class MusicWidget:
         self._drag_from = (event.x_root - self.gx, event.y_root - self.gy)
         self._did_drag = False
 
+        if self._pressed == "seek":
+            # Полоса прогресса перематывает, а не двигает окно: тянуть звук
+            # за собой можно только если мышь остаётся на полосе. Захват
+            # окна здесь не ставим намеренно.
+            self._seeking = True
+            self._drag_from = None
+            self._seek_scrub(event.x)
+
     def _on_release(self, event) -> None:
+        if self._seeking:
+            # Команда уходит один раз, в отпускании: во время протяжки
+            # события идут десятками в секунду.
+            self._seeking = False
+            self._send_seek()
+            return
+
         dragged = self._did_drag
         name = None if dragged else self._pressed
         self._pressed = None
@@ -588,6 +653,9 @@ class MusicWidget:
             self._activate(name)
 
     def _on_drag(self, event) -> None:
+        if self._seeking:
+            self._seek_scrub(event.x)
+            return
         if self._drag_from is None:
             return
         dx = event.x - self._press_xy[0]

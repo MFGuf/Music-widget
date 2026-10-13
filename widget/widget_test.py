@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -22,6 +23,7 @@ sys.path.insert(0, str(HERE.parent))
 
 import ipc  # noqa: E402
 import theme  # noqa: E402
+import vk_music_widget as mw  # noqa: E402
 from report import Checks  # noqa: E402
 from vk_music_widget import MusicWidget  # noqa: E402
 
@@ -34,6 +36,38 @@ def ok(name, condition, detail=""):
 
 def equal(name, actual, expected):
     return checks.equal(name, actual, expected)
+
+
+def fake_event(w: MusicWidget, x: int, y: int):
+    """Событие мыши в координатах виджета.
+
+    Отдельный простой объект вместо настоящего Tk-события: обработчики
+    читают только x, y и координаты на экране, а настоящее событие в тесте
+    пришлось бы подделывать через canvas.event_generate с очередью событий.
+    """
+    return SimpleNamespace(x=x, y=y, x_root=w.gx + x, y_root=w.gy + y)
+
+
+def catch_commands(w: MusicWidget) -> list:
+    """Подменяет отправку команд списком - их потом можно проверить."""
+    sent: list = []
+    w.bridge.send = lambda action, key=None, ratio=None: sent.append(
+        (action, key, ratio))
+    return sent
+
+
+TRACK = {
+    "key": "tab:7", "title": "Кино", "artist": "Группа", "app": "VK Музыка",
+    "dur": 200.0, "pos": 20.0, "playing": True,
+}
+
+
+def show_track(w: MusicWidget) -> None:
+    w.items = [dict(TRACK)]
+    w.selected = "tab:7"
+    w._seek_ratio = None
+    w._seeking = False
+    w._render()
 
 
 def setup(w: MusicWidget, *, connected, note="", problem=None,
@@ -139,6 +173,72 @@ def run_checks(w: MusicWidget) -> None:
     setup(w, connected=False, note="Ждём браузер")
     note, hint = w._diagnosis()
     ok("причина и подсказка различаются", note != hint, f"{note!r} / {hint!r}")
+
+    # --- 10. Перемотка мышью по полосе прогресса ------------------------------
+    sent = catch_commands(w)
+    show_track(w)
+    x0 = (mw.FULL_W - mw.ROW_W) // 2
+    mid_y = mw.PROGRESS_Y + mw.PROGRESS_H / 2
+
+    rect = mw.HIT.get("seek")
+    ok("полоса прогресса видна как зона нажатия", rect is not None)
+    # По вертикали зона шире полоски: в PROGRESS_H пикселей попасть нельзя.
+    # По горизонтали - ровно полоска: поля по бокам остаются местом, за
+    # которое тянут окно.
+    ok("зона нажатия выше и ниже полоски",
+       rect is not None and (rect[3] - rect[1]) > mw.PROGRESS_H,
+       str(rect))
+    ok("зона нажатия по ширине равна полоске",
+       rect is not None and (rect[2] - rect[0]) == mw.ROW_W)
+    equal("нажатие над полоской ловится",
+          w._hit(x0 + mw.ROW_W // 2, mw.PROGRESS_Y - 5), "seek")
+    equal("нажатие под полоской ловится",
+          w._hit(x0 + mw.ROW_W // 2, mw.PROGRESS_Y + mw.PROGRESS_H + 5), "seek")
+    ok("нажатие сбоку от полоски перемоткой не считается",
+       w._hit(x0 - 5, mid_y) != "seek")
+
+    # Клик по середине.
+    w._on_press(fake_event(w, x0 + mw.ROW_W // 2, mid_y))
+    ok("нажатие на полосе начало перемотку", w._seeking is True)
+    ok("нажатие на полосе не захватило окно", w._drag_from is None)
+    equal("клик по середине дал половину", w._seek_ratio, 0.5)
+    w._on_release(fake_event(w, x0 + mw.ROW_W // 2, mid_y))
+    ok("клик отправил ровно одну команду",
+       len(sent) == 1 and sent[0][0] == "seek"
+       and abs(sent[0][2] - 0.5) < 1e-6, str(sent))
+
+    # Протяжка: команда одна и в конце, а не на каждое движение мыши.
+    sent.clear()
+    w._on_press(fake_event(w, x0 + 10, mid_y))
+    for step in (20, 40, 60, mw.ROW_W):
+        w._on_drag(fake_event(w, x0 + step, mid_y))
+    ok("протяжка не шлёт команд на каждый кадр", not sent, str(sent))
+    equal("протяжка дошла до конца дорожки", w._seek_ratio, 1.0)
+    w._on_release(fake_event(w, x0 + mw.ROW_W, mid_y))
+    ok("протяжка отправила одну команду в конце",
+       len(sent) == 1 and abs(sent[0][2] - 1.0) < 1e-6, str(sent))
+
+    # Новый снимок отменяет недовыполненную перемотку.
+    w.states.put({"items": [dict(TRACK)], "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    ok("новый снимок отменил недовыполненную перемотку",
+       w._seek_ratio is None, str(w._seek_ratio))
+
+    # Без трека перематывать нечего.
+    show_track(w)
+    sent.clear()
+    w.items = []
+    w._on_press(fake_event(w, x0 + mw.ROW_W // 2, mid_y))
+    w._on_release(fake_event(w, x0 + mw.ROW_W // 2, mid_y))
+    ok("без трека перемотка не отправляется", not sent, str(sent))
+
+    # За пределами полосы окно по-прежнему тянется.
+    show_track(w)
+    w._on_press(fake_event(w, 5, mw.APP_Y + 4))
+    w._on_drag(fake_event(w, 40, mw.APP_Y + 40))
+    ok("вне полосы мышь тянет окно, а не перематывает",
+       w._did_drag is True and w._seeking is False,
+       f"seeking={w._seeking} gx={w.gx} gy={w.gy}")
 
 
 def main() -> int:
