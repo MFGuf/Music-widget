@@ -28,6 +28,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import ipc  # noqa: E402
+import log as journal  # noqa: E402
 import theme  # noqa: E402
 import vk_music_widget as mw  # noqa: E402
 from report import Checks  # noqa: E402
@@ -378,6 +379,54 @@ def run_checks(w: MusicWidget) -> None:
 
     with_art("kx", "это-не-base64!!")
     ok("битая картинка не роняет отрисовку", w._cover_panel_photo is not None)
+
+    # --- 16. Диагностика: журнал и окно статуса -------------------------------
+    ok("журнал создан при запуске", journal.path().exists())
+    written = journal.path().read_text(encoding="utf-8", errors="replace")
+    ok("в журнале есть запуск виджета", "запуск" in written)
+    ok("в журнале есть порт, который слушает мост", "слушаю порт" in written)
+
+    show_track(w)
+    w.states.put({"items": [dict(TRACK)], "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    ok("в журнал попало первое состояние от расширения",
+       "первое состояние" in written)
+
+    names = [name for name, _ in w._status_lines()]
+    for need in ("Состояние", "Что делать", "Хост браузера", "Порт",
+                 "Расширение", "Вкладок VK", "Журнал", "Виджет"):
+        ok("в статусе есть строка %s" % need, need in names)
+
+    status = dict(w._status_lines())
+    ok("порт в статусе показан числом", status["Порт"].isdigit(), status["Порт"])
+    equal("вкладок в статусе посчитано верно", status["Вкладок VK"], "1")
+    equal("играющий трек виден в статусе", status["Сейчас играет"], TRACK["title"])
+    ok("путь к журналу показан",
+       status["Журнал"].endswith("widget.log"), status["Журнал"])
+
+    # И вид, и закрепление должны быть видны в одной строке: закрепление
+    # само по себе ещё ничего не говорит о том, что на экране.
+    ok("закреплённый развёрнутый вид описан целиком",
+       "развёрнут" in status["Виджет"] and "поверх окон" in status["Виджет"],
+       status["Виджет"])
+    w.topmost = False
+    status = dict(w._status_lines())
+    ok("незакреплённый вид описан целиком",
+       "развёрнут" in status["Виджет"] and "не закреплён" in status["Виджет"],
+       status["Виджет"])
+    w.topmost = True
+
+    tail = w._log_tail(5)
+    # Хвост - это последние строки, а не первые: к этому моменту журнал
+    # длиннее пяти строк, и запись о запуске уже вытеснена. Проверяем
+    # поэтому свежее, а не давнее.
+    ok("хвост журнала содержит последнюю запись",
+       "первое состояние" in tail, tail.splitlines()[-1][:60] if tail else "")
+    ok("хвост журнала ограничен запрошенным числом строк",
+       len(tail.splitlines()) <= 5, str(len(tail.splitlines())))
+    ok("каждая строка журнала начинается со времени",
+       all(line[:4].isdigit() and line[4] == "-" for line in tail.splitlines()),
+       tail.splitlines()[0][:20] if tail else "")
 
 
 def main() -> int:

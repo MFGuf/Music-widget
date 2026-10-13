@@ -23,6 +23,7 @@ import time
 from typing import Any
 
 import ipc
+import log as journal
 
 # Виджет шлёт это сразу при подключении. Расширение по нему понимает, что
 # перед ним живой виджет, а не просто занятый порт.
@@ -72,6 +73,8 @@ class BridgeWorker(threading.Thread):
         return self._problem
 
     def _set_note(self, text: str, problem: str | None = None) -> None:
+        if text != self._note:
+            journal.write("мост: " + text)
         self._note = text
         self._problem = problem
 
@@ -125,6 +128,7 @@ class BridgeWorker(threading.Thread):
         # пользователю, поэтому чужой процесс его не знает.
         if token != self._token:
             self._set_note("Кто-то ещё занял порт виджета", problem="port-taken")
+            journal.write("мост: кто-то подключился с чужим токеном, соединение разорвано")
             return False
         try:
             ipc.write_message(stream_out, {"t": "auth-ok", "v": ipc.PROTOCOL_VERSION})
@@ -271,6 +275,7 @@ class BridgeWorker(threading.Thread):
             self._server = self._open_server()
         except RuntimeError as exc:
             self._set_note(str(exc), problem="no-port")
+            journal.problem("мост: не удалось занять порт")
             # Виджет без связи бессмыслен, но закрывать окно из-за этого
             # нельзя: пусть пользователь увидит объяснение.
             while not self._stopped.is_set():
@@ -280,6 +285,9 @@ class BridgeWorker(threading.Thread):
         port = self._server.getsockname()[1]
         ipc.write_endpoint(port, self._token)
         self._set_note("Ждём браузер")
+        journal.write(
+            "мост: слушаю порт %d, точка входа %s" % (port, ipc.ENDPOINT_FILE)
+        )
 
         # Накачивание команд виджета - один поток на весь процесс, а не на
         # каждое соединение: иначе при каждом переподключении добавлялся бы

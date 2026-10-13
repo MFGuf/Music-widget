@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import io
 import math
+import platform
 import queue
 import sys
 import time
@@ -38,12 +39,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PIL import Image, ImageTk
 
+import ipc
 import theme
 from theme import (
     ACCENT, ACCENT_HOVER, ACCENT_SOFT, CARD, COVER, DIM, EDGE_MARGIN, FULL_H,
     FULL_W, MINI_COVER, MUTED, OVERLAY, OVERLAY_DIM, OVERLAY_HI, ROW_W,
     SNAP_DISTANCE, TEXT, TRANSPARENT,
 )
+import log as journal
 from bridge_worker import BridgeWorker
 
 # Как часто окно перерисовывает себя. Состояние приходит раз в 700 мс, но
@@ -116,6 +119,8 @@ class MusicWidget:
         # секунду после запуска нельзя.
         self._connected = False
         self._connected_since = 0.0
+        self._logged_first_state = False
+        self._started_at = time.monotonic()
 
         self.collapsed = False
         self.topmost = True
@@ -138,6 +143,8 @@ class MusicWidget:
         self._seeking = False
         self._seek_ratio: float | None = None
 
+        journal.write("виджет: запуск, Python %s, журнал %s"
+                      % (platform.python_version(), journal.path()))
         self._build()
         self.bridge.start()
         self.root.after(FRAME_MS, self._frame)
@@ -309,6 +316,16 @@ class MusicWidget:
             # Новый снимок отменяет недовыполненную перемотку: браузер уже
             # отчитался о реальном положении дел, доверять ему надо.
             self._seek_ratio = None
+            # Первое состояние из расширения - главная точка журнала: по ней
+            # видно, что цепочка браузер - хост - виджет замкнулась. Дальше
+            # то же самое повторяется каждые 700 мс и только засоряет файл.
+            if not self._logged_first_state:
+                self._logged_first_state = True
+                journal.write(
+                    "виджет: первое состояние от расширения: %d вкладок, "
+                    "выбрана %r, примечание %r"
+                    % (len(self.items), self.selected, self.note)
+                )
             changed = True
 
     # --- отрисовка ---------------------------------------------------------------
@@ -704,6 +721,7 @@ class MusicWidget:
                        activebackground=ACCENT, activeforeground="#ffffff")
         menu.add_command(label="Развернуть", command=self._expand)
         menu.add_command(label="Закрепить поверх окон", command=self._toggle_topmost)
+        menu.add_command(label="Диагностика", command=self._show_status)
         menu.add_command(label="Закрыть", command=self._quit)
         try:
             menu.tk_popup(int(self.root.winfo_pointerx()),
@@ -727,6 +745,91 @@ class MusicWidget:
             key = name[4:]
             self.selected = key
             self.bridge.send("select", key)
+
+    # --- окно диагностики -------------------------------------------------------
+
+    def _status_lines(self) -> list[tuple[str, str]]:
+        """Состояние виджета парами «что - значение».
+
+        Порядок - от внешнего к внутреннему: сначала браузер и хост, потом
+        расширение, потом сам виджет. Так по списку видно, на каком шаге
+        цепочка оборвалась.
+        """
+        note, hint = self._diagnosis()
+        endpoint = ipc.read_endpoint()
+        age = time.monotonic() - self.last_state_at if self.last_state_at else None
+        current = self._current() or {}
+        shape = "свёрнут" if self.collapsed else "развёрнут"
+        pinned = "поверх окон" if self.topmost else "не закреплён"
+        return [
+            ("Состояние", note),
+            ("Что делать", hint),
+            ("Хост браузера", "подключён" if self.bridge.connected else "не подключён"),
+            ("Порт", str(endpoint["port"]) if endpoint else "нет"),
+            ("Точка входа", str(ipc.ENDPOINT_FILE)),
+            ("Расширение", "отвечает" if self._extension_alive() else "молчит"),
+            ("Последний снимок", "%s назад" % journal.uptime_note(self.last_state_at)
+             if age is not None else "ни одного"),
+            ("Вкладок VK", str(len(self.items))),
+            ("Выбрана", str(self.selected)),
+            ("Сейчас играет", str(current.get("title") or "—")),
+            ("Виджет", "%s, %s" % (shape, pinned)),
+            ("Работает", journal.uptime_note(self._started_at)),
+            ("Журнал", str(journal.path())),
+        ]
+
+    def _show_status(self) -> None:
+        """Окно со статусом и хвостом журнала.
+
+        Отдельное окно, а не вывод в консоль: у виджета её нет. Показываем
+        не всё состояние целиком, а последние строки журнала - их и надо
+        читать, когда что-то сломалось.
+        """
+        window = tk.Toplevel(self.root)
+        window.title("Music Widget - диагностика")
+        window.configure(bg=CARD)
+        window.resizable(False, False)
+        window.attributes("-topmost", True)
+
+        body = tk.Frame(window, bg=CARD)
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+
+        for name, value in self._status_lines():
+            row = tk.Frame(body, bg=CARD)
+            row.pack(fill="x", anchor="w")
+            tk.Label(row, text=name + ":", bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 9), width=16, anchor="w").pack(side="left")
+            tk.Label(row, text=value, bg=CARD, fg=TEXT,
+                     font=("Segoe UI", 9), anchor="w").pack(side="left")
+
+        tail = self._log_tail()
+        block = tk.Frame(body, bg=CARD)
+        block.pack(fill="both", expand=True, pady=(10, 0))
+        tk.Label(block, text="Последние записи журнала", bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x")
+        text = tk.Text(block, bg="#101014", fg="#d8d8e0", wrap="none",
+                       height=12, width=78, relief="flat",
+                       font=("Consolas", 9))
+        text.pack(fill="both", expand=True, pady=(4, 0))
+        text.insert("1.0", tail)
+        text.configure(state="disabled")
+
+        def close():
+            window.destroy()
+
+        tk.Button(window, text="Закрыть", command=close, bg=ACCENT,
+                  fg="#ffffff", relief="flat", takefocus=0).pack(pady=(0, 12))
+        window.protocol("WM_DELETE_WINDOW", close)
+
+    @staticmethod
+    def _log_tail(lines: int = 60) -> str:
+        """Хвост журнала или объяснение, почему его нет."""
+        try:
+            content = journal.path().read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return "журнал недоступен: %s" % exc
+        tail = content.splitlines()[-lines:]
+        return "\n".join(tail) if tail else "журнал пуст"
 
     # --- переключение вида -------------------------------------------------------
 
@@ -819,6 +922,7 @@ class MusicWidget:
             self._bands[i] = value if value > self._bands[i] else self._bands[i] * 0.78
 
     def _quit(self) -> None:
+        journal.write("виджет: закрытие пользователем")
         self.bridge.stop()
         self.root.destroy()
 
