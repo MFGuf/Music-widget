@@ -67,8 +67,13 @@ function handleDisconnect(reason) {
 }
 
 function connectHost() {
-  browser.runtime
-    .connectNative(HOST_NAME)
+  // Firefox 158 отдаёт порт сразу, а не через промис: у возвращённого
+  // объекта нет .then. Раньше здесь стоял голый вызов с .then, и на 158
+  // он падал с TypeError прямо во время запуска - исключение уходило
+  // выше, опрос вкладок не стартовал, и виджет видел "хост подключён,
+  // расширение не отвечает". Promise.resolve приводит оба вида к одному
+  // и не ломает старые версии, где возвращался промис.
+  Promise.resolve(browser.runtime.connectNative(HOST_NAME))
     .then((port) => {
       host.port = port;
       host.connected = true;

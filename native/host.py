@@ -32,6 +32,7 @@ Firefox держит каналы открытыми, пока работает 
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import threading
 import time
@@ -129,6 +130,10 @@ def firefox_pump(firefox_in, firefox_out, current) -> None:
     пришедшие без соединения, уходят в никуда: расширение пришлёт состояние
     снова, а очередь копить незачем.
     """
+    # Первые сообщения пишем в журнал целиком (обрезанные): по ним видно,
+    # дошло ли сообщение от расширения вообще. Дальше молчим - состояние
+    # приходит каждые 700 мс, и журнал забьётся бесполезными строками.
+    logged = [0]
     while True:
         try:
             message = ipc.read_message(firefox_in)
@@ -138,6 +143,10 @@ def firefox_pump(firefox_in, firefox_out, current) -> None:
         if message is None:
             log("Firefox закрыл канал, хост завершается")
             return
+        if logged[0] < 5:
+            logged[0] += 1
+            text = str(message)
+            log("от Firefox: " + text[:160])
         bridge = current()
         if bridge is None:
             continue
@@ -162,9 +171,33 @@ def authenticate(widget_in, widget_out) -> bool:
     return isinstance(reply, dict) and reply.get("t") == "auth-ok"
 
 
+def describe_channels() -> str:
+    """Что за каналы достались хосту.
+
+    Отдельная проверка, потому что по симптомам «Firefox молчит» и «хост
+    молчит» не различить, где именно порвалось. Труба от Firefox - это
+    анонимный канал (S_IFIFO). Если вместо неё консоль или файл, значит
+    канал до Python не дошёл: обычно это исторически сложившийся запуск
+    хоста не тем способом, и чинить надо запуск, а не протокол.
+    """
+    parts = []
+    for name, fd in (("stdin", 0), ("stdout", 1)):
+        try:
+            mode = os.fstat(fd).st_mode
+        except OSError as exc:
+            parts.append(f"{name}: не читается ({exc})")
+            continue
+        kind = ("труба" if stat.S_ISFIFO(mode)
+                else "файл" if stat.S_ISREG(mode)
+                else "устройство" if stat.S_ISCHR(mode)
+                else "иное")
+        parts.append(f"{name}: {kind}")
+    return ", ".join(parts)
+
+
 def main() -> int:
     guard_stdout()
-    log("хост запущен")
+    log("хост запущен; каналы: " + describe_channels())
     firefox_in, firefox_out = take_stdio()
 
     active: list[Bridge | None] = [None]

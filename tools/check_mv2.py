@@ -58,6 +58,7 @@ user_pref("devtools.debugger.remote-enabled", true);
 user_pref("devtools.debugger.prompt-connection", false);
 user_pref("devtools.debugger.force-local", true);
 user_pref("devtools.chrome.enabled", true);
+user_pref("devtools.console.stdout.content", true);
 user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("toolkit.telemetry.enabled", false);
