@@ -1,12 +1,14 @@
 #!/usr/bin/env python
-"""Проверки диагностики виджета (widget/vk_music_widget.py).
+"""Проверки виджета (widget/vk_music_widget.py).
 
 Запуск:
     python widget\\widget_test.py
 
-Проверяется то, что пользователь видит, когда трек не видно. Раньше подпись
-молчала: показывался только текст от расширения, а при незапущенном Firefox
-он не приходил вовсе, и оставалось вечное «Подключение к браузеру...».
+Две части. Первая - что пользователь видит, когда трек не видно: раньше
+подпись молчала, показывался только текст от расширения, а при незапущенном
+Firefox он не приходил вовсе, и оставалось вечное «Подключение к браузеру...».
+Вторая - работа мыши: перемотка по полосе, выбор вкладки, сворачивание,
+закрепление и перетаскивание окна.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import vk_music_widget as mw  # noqa: E402
 from report import Checks  # noqa: E402
 from vk_music_widget import MusicWidget  # noqa: E402
 
-checks = Checks("widget", "диагностика виджета (vk_music_widget)")
+checks = Checks("widget", "виджет: диагностика и работа мыши (vk_music_widget)")
 
 
 def ok(name, condition, detail=""):
@@ -239,6 +241,64 @@ def run_checks(w: MusicWidget) -> None:
     ok("вне полосы мышь тянет окно, а не перематывает",
        w._did_drag is True and w._seeking is False,
        f"seeking={w._seeking} gx={w.gx} gy={w.gy}")
+
+    # --- 11. Выбор активной вкладки -------------------------------------------
+    other = dict(TRACK, key="tab:9", title="Земфир", artist="Другой", dur=20.0)
+    w.items = [dict(TRACK), other]
+    w.selected = "tab:7"
+    w._render()
+    rows = sorted(k for k in mw.HIT if k.startswith("src:"))
+    equal("в списке обе вкладки", rows, ["src:tab:7", "src:tab:9"])
+
+    rect = mw.HIT["src:tab:9"]
+    cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+    equal("строка вкладки ловит нажатие", w._hit(cx, cy), "src:tab:9")
+
+    w._on_press(fake_event(w, cx, cy))
+    w._on_release(fake_event(w, cx, cy))
+    ok("выбор вкладки отправил команду",
+       sent == [("select", "tab:9", None)], str(sent))
+    equal("выбор виден на видужете сразу, не дожидаясь снимка", w.selected, "tab:9")
+    equal("рисуется трек выбранной вкладки", (w._current() or {}).get("key"), "tab:9")
+
+    w.items = [dict(TRACK)]
+    w._render()
+    ok("при одной вкладке список не занимает место",
+       not any(k.startswith("src:") for k in mw.HIT))
+
+    # --- 12. Сворачивание в пилюлю --------------------------------------------
+    w.collapsed = False
+    w._collapse()
+    ok("виджет свернулся", w.collapsed is True)
+    w._render()
+    equal("в пилюле нажатие ловит только разворот", w._hit(30, 30), "expand")
+    w._expand()
+    ok("виджет развернулся", w.collapsed is False)
+
+    # --- 13. Закрепление поверх окон -------------------------------------------
+    was = w.topmost
+    w._toggle_topmost()
+    ok("закрепление переключилось", w.topmost is (not was),
+       f"{was} -> {w.topmost}")
+    w._toggle_topmost()
+    ok("закрепление переключается обратно", w.topmost is was)
+
+    # --- 14. Перетаскивание окна ----------------------------------------------
+    show_track(w)
+    w.gx, w.gy = 400, 300
+    w._on_press(fake_event(w, 100, 200))
+    w._on_drag(fake_event(w, 100 + mw.DRAG_THRESHOLD - 2, 201))
+    ok("сдвиг меньше порога не тянет окно", w._did_drag is False)
+    w._on_release(fake_event(w, 100 + mw.DRAG_THRESHOLD - 2, 201))
+
+    w._on_press(fake_event(w, 100, 200))
+    w._on_drag(fake_event(w, 140, 260))
+    ok("сдвиг больше порога тянет окно",
+       w._did_drag is True and (w.gx, w.gy) != (400, 300), f"gx={w.gx} gy={w.gy}")
+    w._on_release(fake_event(w, 140, 260))
+    sw, sh = w._screen()
+    ok("окно не уехало за экран",
+       0 <= w.gx <= sw and 0 <= w.gy <= sh, f"gx={w.gx} gy={w.gy}")
 
 
 def main() -> int:
