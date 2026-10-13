@@ -51,6 +51,11 @@ class BridgeWorker(threading.Thread):
         self._stopped = threading.Event()
         self._connected = False
         self._note = "Запуск..."
+        # Что именно сломалось, коротким кодом. Текст подписи годен человеку,
+        # но по нему нельзя надёжно отличить "порт занят" от "не удалось занять
+        # порт" - а подсказка в этих случаях разная. Пустой код означает, что
+        # ничего не сломалось: виджет просто ждёт браузер.
+        self._problem: str | None = None
 
     # --- состояние ----------------------------------------------------------
 
@@ -62,8 +67,13 @@ class BridgeWorker(threading.Thread):
     def note(self) -> str:
         return self._note
 
-    def _set_note(self, text: str) -> None:
+    @property
+    def problem(self) -> str | None:
+        return self._problem
+
+    def _set_note(self, text: str, problem: str | None = None) -> None:
         self._note = text
+        self._problem = problem
 
     # --- приём соединения ----------------------------------------------------
 
@@ -114,7 +124,7 @@ class BridgeWorker(threading.Thread):
         # Токен живёт в файле точки входа, доступном только текущему
         # пользователю, поэтому чужой процесс его не знает.
         if token != self._token:
-            self._set_note("Кто-то ещё занял порт виджета")
+            self._set_note("Кто-то ещё занял порт виджета", problem="port-taken")
             return False
         try:
             ipc.write_message(stream_out, {"t": "auth-ok", "v": ipc.PROTOCOL_VERSION})
@@ -167,7 +177,13 @@ class BridgeWorker(threading.Thread):
                 conn.shutdown(2)
             except OSError:
                 pass
-        self._set_note("Виджет ждёт браузер")
+        # Проблему не затираем. Этот метод вызывается и из finally на
+        # отказе при проверке токена: только что записали «кто-то занял
+        # порт», а вслед за этим затёрли бы «виджет ждёт браузер», и
+        # пользователь не увидел бы ничего. Проблема сама снимется, когда
+        # придёт настоящий хост.
+        if self._problem is None:
+            self._set_note("Виджет ждёт браузер")
 
     # --- обмен ---------------------------------------------------------------
 
@@ -254,7 +270,7 @@ class BridgeWorker(threading.Thread):
         try:
             self._server = self._open_server()
         except RuntimeError as exc:
-            self._set_note(str(exc))
+            self._set_note(str(exc), problem="no-port")
             # Виджет без связи бессмыслен, но закрывать окно из-за этого
             # нельзя: пусть пользователь увидит объяснение.
             while not self._stopped.is_set():

@@ -159,11 +159,17 @@ def main() -> int:
            "соединение осталось открытым")
         ok("чужой токен не считается подключением", worker.connected is False,
            worker.note)
+        # Виджет по коду проблемы выбирает подсказку: на занятый порт
+        # браузер не помогает, нужен второй виджет, который надо закрыть.
+        equal("чужой процесс помечен кодом занятости порта",
+              worker.problem, "port-taken")
 
         # --- 3. Настоящий хост -------------------------------------------------
         host = FakeHost()
         ok("настоящий хост подключился", host.connect())
         ok("виджет увидел браузер", wait_for(lambda: worker.connected), worker.note)
+        ok("код проблемы сброшен после успешного подключения",
+           wait_for(lambda: worker.problem is None), str(worker.problem))
         ok("виджет поздоровался сам", wait_for(lambda: bool(host.seen("hello"))),
            "hello не пришёл")
 

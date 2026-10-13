@@ -106,6 +106,13 @@ class MusicWidget:
         self.note = "Подключение к браузеру..."
         self.last_state_at = 0.0
 
+        # Подключился ли хост и с какого момента. Без второго поля отличить
+        # «расширение ещё не успело прислать первый снимок» от «расширение
+        # молчит полминуты» нельзя, а ругаться на пользователя за первую
+        # секунду после запуска нельзя.
+        self._connected = False
+        self._connected_since = 0.0
+
         self.collapsed = False
         self.topmost = True
         self.gx = 0
@@ -176,6 +183,54 @@ class MusicWidget:
         return (self.last_state_at > 0
                 and time.monotonic() - self.last_state_at < STALE_AFTER_SEC)
 
+    def _track_connection(self) -> None:
+        """Запоминает момент, когда хост подключился.
+
+        Мост сам себя не помнит: у него есть только «подключён сейчас или
+        нет». Виджету же нужно знать, сколько секунд прошло с начала связи,
+        чтобы не объявить расширение молчащим в первую же секунду.
+        """
+        if self.bridge.connected and not self._connected:
+            self._connected_since = time.monotonic()
+        self._connected = self.bridge.connected
+
+    def _diagnosis(self) -> tuple[str, str]:
+        """Что показать, когда трек не видно: причина и что делать.
+
+        Слои перебираются сверху вниз, и каждый следующий имеет смысл только
+        если предыдущий в порядке:
+
+            1. мост   - браузер и хост вообще есть ли;
+            2. связь  - отвечает ли расширение;
+            3. текст  - что не так со стороны VK.
+
+        Раньше показывался только третий слой, поэтому при незапущенном
+        Firefox подпись молчала, и пользователь не понимал, что делать.
+        Текст первого слоя отдаёт сам мост: он различает «ждём браузер»,
+        «порт занял кто-то ещё» и неудачу при попытке занять порт.
+        """
+        if not self.bridge.connected:
+            # Подсказка зависит от того, что именно не так, иначе она
+            # врёт: на занятый порт браузер не помогает, нужен второй
+            # виджет, который надо закрыть.
+            if self.bridge.problem == "port-taken":
+                return self.bridge.note, "Закройте второй виджет"
+            if self.bridge.problem == "no-port":
+                return self.bridge.note, "Освободите порт и запустите виджет"
+            return self.bridge.note, "Откройте Firefox с расширением"
+
+        if not self._extension_alive():
+            # Первый снимок расширение шлёт не сразу, а по своему
+            # интервалу опроса вкладок. До истечения того же запаса времени,
+            # что и для устаревания снимков, ждать штатно.
+            waited = time.monotonic() - self._connected_since
+            if waited < STALE_AFTER_SEC:
+                return "Хост подключён, ждём данные...", "Подключение к VK Музыке"
+            return ("Хост подключён, но расширение не отвечает",
+                    "Загрузите расширение в about:debugging")
+
+        return self.note, "Включите трек в VK Музыке"
+
     def _position(self, item) -> float:
         """Позиция по реальным часам от последнего снимка.
 
@@ -210,6 +265,7 @@ class MusicWidget:
     # --- отрисовка ---------------------------------------------------------------
 
     def _frame(self) -> None:
+        self._track_connection()
         self._drain_states()
         self._render()
         self.root.after(FRAME_MS, self._frame)
@@ -306,8 +362,7 @@ class MusicWidget:
             title = "Nothing playing"
             # Под исполнителем - что делать, внизу - что произошло.
             # Одной и той же строкой в двух местах пользователю нечего.
-            artist = ("Включите трек в VK Музыке" if self._extension_alive()
-                      else "Подключите расширение в Firefox")
+            artist = self._diagnosis()[1]
         else:
             app = (item.get("app") or "").upper()
             title = item.get("title") or "Unknown track"
@@ -447,7 +502,7 @@ class MusicWidget:
         top = self._footer_y()
         if item is None:
             self.canvas.create_text(
-                (FULL_W - ROW_W) // 2, top, text=_clip(self.note, 46),
+                (FULL_W - ROW_W) // 2, top, text=_clip(self._diagnosis()[0], 46),
                 font=("Segoe UI", 8), fill=DIM, anchor="nw",
             )
             return
