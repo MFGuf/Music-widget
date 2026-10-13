@@ -324,13 +324,14 @@ class MusicWidget:
         HIT.clear()
 
         if self.collapsed:
-            self._render_collapsed()
+            self._render_collapsed(self._current())
         else:
             self._render_full()
 
     # -- свёрнутый вид: только обложка --
 
-    def _render_collapsed(self) -> None:
+    def _render_collapsed(self, item) -> None:
+        self._refresh_covers(item)
         HIT["expand"] = (0, 0, MINI_COVER, MINI_COVER)
         self.canvas.create_image(0, 0, image=self._mini_photo, anchor="nw")
         self._cursor = "hand2"
@@ -376,24 +377,49 @@ class MusicWidget:
         рабочий стол. Поэтому обложка вырезается из фона и рисуется
         одним куском.
         """
-        square = self._cover_square(item)
-        if square is not self._cover_cache_key:
-            x0 = (FULL_W - COVER) // 2
-            panel = self.wallpaper.crop((x0, COVER_Y, x0 + COVER, COVER_Y + COVER))
-            panel.paste(square, (0, 0), theme.rounded_mask(COVER, theme.cover_radius(COVER)))
-            self._cover_panel_photo = ImageTk.PhotoImage(panel)
-            self._cover_cache_key = square
+        self._refresh_covers(item)
         self.canvas.create_image(
             (FULL_W - COVER) // 2, COVER_Y, image=self._cover_panel_photo, anchor="nw"
         )
 
-    def _cover_square(self, item) -> Image.Image:
+    def _cover_token(self, item) -> tuple:
+        """Что считать новой обложкой: трек и сами данные картинки.
+
+        Одного art_new мало: обложка может прийти из кэша расширения с
+        art_new = false, и виджет счёл бы её той же картинкой, которой
+        ещё нет, и оставил бы заглушку навсегда.
+        """
+        return ((item or {}).get("ck"), (item or {}).get("art") or "")
+
+    def _refresh_covers(self, item) -> None:
+        """Готовит обе картинки обложки: для карточки и для пилюли.
+
+        Обе views ходят сюда же, а не каждая по-своему: свёрнутый вид не
+        проходит через _draw_cover, и раньше он молча рисовал обложку
+        прошлого трека.
+
+        Пересобирается только при смене картинки: каждый кадр заново
+        распаковывать base64 и создавать PhotoImage слишком дорого, а
+        кадров в секунду двадцать.
+        """
+        token = self._cover_token(item)
+        if token == self._cover_cache_key:
+            return
+
+        square = self._decode_cover(item)
+        self._mini_photo = ImageTk.PhotoImage(theme.round_image(square, MINI_COVER))
+        x0 = (FULL_W - COVER) // 2
+        panel = self.wallpaper.crop((x0, COVER_Y, x0 + COVER, COVER_Y + COVER))
+        panel.paste(square, (0, 0), theme.rounded_mask(COVER, theme.cover_radius(COVER)))
+        self._cover_panel_photo = ImageTk.PhotoImage(panel)
+        self._cover_cache_key = token
+
+    def _decode_cover(self, item) -> Image.Image:
         """Квадратная обложка нужного размера: трек или заглушка."""
         art = (item or {}).get("art")
         if art:
             try:
                 source = Image.open(io.BytesIO(base64.b64decode(art)))
-                self._mini_photo = ImageTk.PhotoImage(theme.round_image(source, MINI_COVER))
                 return theme.cover_square(source, COVER)
             except Exception:
                 pass

@@ -13,11 +13,15 @@ Firefox он не приходил вовсе, и оставалось вечн�
 
 from __future__ import annotations
 
+import base64
+import io
 import sys
 import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -70,6 +74,35 @@ def show_track(w: MusicWidget) -> None:
     w._seek_ratio = None
     w._seeking = False
     w._render()
+
+
+def cover_art(color: tuple) -> str:
+    """Обложка в виде base64 - ровно так её присылает расширение."""
+    image = Image.new("RGB", (300, 300), color)
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def count_decodes(action) -> int:
+    """Сколько раз действие распаковало картинку.
+
+    Считает вызовы Image.open: обложка приходит строкой base64, и единственное
+    место, где её распаковывают, - виджет.
+    """
+    opened = {"n": 0}
+    real_open = Image.open
+
+    def counting_open(*args, **kwargs):
+        opened["n"] += 1
+        return real_open(*args, **kwargs)
+
+    Image.open = counting_open
+    try:
+        action()
+    finally:
+        Image.open = real_open
+    return opened["n"]
 
 
 def setup(w: MusicWidget, *, connected, note="", problem=None,
@@ -299,6 +332,52 @@ def run_checks(w: MusicWidget) -> None:
     sw, sh = w._screen()
     ok("окно не уехало за экран",
        0 <= w.gx <= sw and 0 <= w.gy <= sh, f"gx={w.gx} gy={w.gy}")
+
+    # --- 15. Обложка трека ---------------------------------------------------
+    red, blue = cover_art((255, 0, 0)), cover_art((0, 0, 255))
+
+    def with_art(key, art=None, **extra):
+        item = dict(TRACK, key=key, ck=key, **extra)
+        if art is not None:
+            item["art"] = art
+            item["art_new"] = True
+        w.items = [item]
+        w.selected = key
+        w.collapsed = False
+        w._render_full()
+
+    # Свёрнутый вид рисует обложку сам, минуя _draw_cover, и раньше молчал,
+    # показывая картинку прошлого трека.
+    with_art("k1", red)
+    first = w._mini_photo
+    with_art("k2", blue)
+    w.collapsed = True
+    w._render()
+    ok("свёрнутая пилюля подхватывает обложку нового трека",
+       w._mini_photo is not first)
+    w.collapsed = False
+
+    # Кадров двадцать в секунду: пересобирать картинку каждый раз слишком
+    # дорого, но только если кэш ловит неизменную обложку.
+    with_art("k1", red)
+    decoded = count_decodes(lambda: [w._render_full() for _ in range(50)])
+    equal("неизменная обложка не декодируется каждый кадр", decoded, 0)
+
+    # Обложка приходит позже того же трека, поэтому одного признака трека
+    # мало - нужен ещё и сам кусок данных.
+    w.items = [dict(TRACK, key="k1", ck="k1")]
+    w.selected = "k1"
+    w._render_full()
+    w.items[0]["art"] = red
+    w.items[0]["art_new"] = True
+    equal("пришедшая позже обложка обновляет картинку",
+          count_decodes(w._render_full), 1)
+
+    with_art("k9")
+    ok("без картинки рисуется заглушка", w._cover_panel_photo is not None)
+
+    with_art("kx", "это-не-base64!!")
+    ok("битая картинка не роняет отрисовку", w._cover_panel_photo is not None)
 
 
 def main() -> int:
