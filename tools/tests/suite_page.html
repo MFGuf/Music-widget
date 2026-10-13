@@ -419,6 +419,57 @@ st = await ask("getState", null);
 assertEqual("page: неизвестный трек остаётся без длительности", st.dur, 0);
 assertEqual("page: неизвестный трек не считается точным", st.durExact, false);
 
+// --- Текущий трек по данным API -------------------------------------------------
+//
+// Проверяем ровно ту поломку, что видел пользователь: на странице плейлиста
+// селекторы названия попадают в заголовок раздела, и виджет показывал
+// «Моя музыка» с длительностью всего плейлиста. Ответ API должен побеждать.
+
+// Сначала ответ про список треков - текущим он не считается: в плейлисте их
+// десятки, и последний из них может быть совсем не тем, что звучит.
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { title: "Первый в списке", artist: "Кто-то", duration: 111,
+        thumb_src: "https://sun1-96.userapi.com/list.jpg" },
+      { title: "Просто в списке", artist: "Кто-то", duration: 222 },
+    ],
+  },
+});
+mockPlayer({ title: "Моя музыка", artist: "", media: false, noCover: true });
+st = await ask("getState", null);
+assert("page: ответ со списком треков не становится текущим",
+  st.title !== "Просто в списке", st.title);
+
+// Теперь ответ про один конкретный трек - это и есть играющее.
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    title: "Переимен", artist: "Кино", duration: 245,
+    thumb_src: "https://sun1-96.userapi.com/track.jpg",
+  },
+});
+mockPlayer({ title: "Моя музыка", artist: "", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: название берётся из API, а не из заголовка раздела",
+  st.title, "Переимен");
+assertEqual("page: исполнитель берётся из API", st.artist, "Кино");
+assertEqual("page: длительность играющего трека из API", st.dur, 245);
+assertEqual("page: длительность помечена точной", st.durExact, true);
+assertEqual("page: обложка играющего трека из API", st.coverUrl,
+  "https://sun1-96.userapi.com/track.jpg");
+
+// Ответ плейлиста после одиночного трека не должен перебивать его: если бы
+// перебивал, длинный плейлист снова превратился бы в «текущий трек».
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [{ title: "Другая песня", artist: "Оркестр", duration: 3600 }],
+  },
+});
+mockPlayer({ title: "Моя музыка", artist: "", media: false, noCover: true });
+st = await ask("getState", null);
+assertEqual("page: список треков не вытесняет текущий трек", st.title, "Переимен");
+assertEqual("page: длительность не сбилась на длину плейлиста", st.dur, 245);
+
 // Вложенный ответ execute.multiple разбирается так же.
 await apiCall("https://api.vk.com/method/execute.multiple", {
   response: {

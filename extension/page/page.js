@@ -107,9 +107,28 @@
     return "";
   }
 
-  function rememberTrack(artist, title, dur, coverUrl) {
+  // Текущий трек по данным API.
+  //
+  // Разбирать вёрстку VK по селекторам ненадёжно: разметка меняется без
+  // предупреждения, и на странице плейлиста селектор названия трека
+  // попадает в заголовок раздела - виджет показывал «Моя музыка».
+  // Ответы API куда надёжнее: когда начинает играть трек, VK запрашивает
+  // его отдельно, и там лежат название, исполнитель, точная длительность
+  // и обложка.
+  const CURRENT_TTL_MS = 10 * 60 * 1000;
+
+  function rememberTrack(artist, title, dur, coverUrl, asCurrent) {
     if (!title || !isFinite(dur) || dur <= 0) {
       return;
+    }
+    if (asCurrent) {
+      apiState.current = {
+        artist: artist || "",
+        title: title,
+        dur: dur,
+        coverUrl: coverUrl || "",
+        at: Date.now(),
+      };
     }
     const key = metaKey(artist, title);
     const previous = apiMeta.get(key);
@@ -128,28 +147,38 @@
   }
 
   // Ответы VK бывают вложенными (execute.multiple), поэтому обходим дерево.
-  function absorbApiJson(node, depth) {
+// asCurrent - «это ответ про один конкретный трек», а не список плейлиста.
+  function absorbApiJson(node, depth, asCurrent) {
     if (!node || typeof node !== "object" || depth > 8) {
       return;
     }
     if (Array.isArray(node)) {
       for (const item of node) {
-        absorbApiJson(item, depth + 1);
+        absorbApiJson(item, depth + 1, false);
       }
       return;
     }
     const title = typeof node.title === "string" ? node.title : "";
-    const artist = typeof node.artist === "string" ? node.artist : "";
+    const artist = typeof node.artist === "string" && node.artist
+      ? node.artist
+      : (typeof node.owner_name === "string" ? node.owner_name : "");
     const dur = Number(node.duration);
     if (title && isFinite(dur) && dur > 0) {
-      rememberTrack(artist, title, dur, pickCoverUrl(node));
+      rememberTrack(artist, title, dur, pickCoverUrl(node), asCurrent);
     }
     for (const key of Object.keys(node)) {
-      absorbApiJson(node[key], depth + 1);
+      absorbApiJson(node[key], depth + 1, false);
     }
   }
 
-  function absorbApiText(text) {
+  // Запрос ровно одного трека: audio.get и подобные. Ответ на список
+  // плейлиста текущим треком не считается - там их десятки.
+  function isSingleTrackRequest(url) {
+    return /method\/(audio\.get|audio\.market[._]?get|audio\.search)\b/i.test(
+      String(url || ""));
+  }
+
+  function absorbApiText(text, url) {
     if (!text || text.length > MAX_API_TEXT) {
       return;
     }
@@ -163,7 +192,13 @@
     } catch (e) {
       return;
     }
-    absorbApiJson(json, 0);
+    const single = isSingleTrackRequest(url);
+    // Текущим треком считаем первый подходящий объект верхнего уровня:
+    // в ответе audio.get он лежит в response, а не в глубине списка.
+    absorbApiJson(json, 0, single);
+    if (single && json && json.response && typeof json.response === "object") {
+      absorbApiJson(json.response, 0, true);
+    }
   }
 
   function looksLikeApi(url) {
@@ -203,7 +238,9 @@
             // Клонируем ДО чтения: оригинал должен остаться нетронутым
             // для самой страницы.
             const copy = response.clone();
-            copy.text().then(absorbApiText, function () {});
+            copy.text().then(function (text) {
+              absorbApiText(text, url);
+            }, function () {});
           } catch (e) {
             // Тело уже прочитано страницей - просто пропускаем.
           }
@@ -226,7 +263,7 @@
           self.addEventListener("load", function () {
             try {
               if (self.responseType === "" || self.responseType === "text") {
-                absorbApiText(self.responseText);
+                absorbApiText(self.responseText, self.__mwUrl);
               }
             } catch (e) {
               // responseText недоступен для не-текстовых ответов.
@@ -351,16 +388,52 @@
     return raw;
   }
 
+  function currentTrack() {
+    // Данные о текущем треке из API, пока не устарели. После смены трека
+    // приходит новый ответ VK, поэтому десяти минут с запасом хватает, а
+    // старый трек не будет висеть на виджете вечно.
+    const now = Date.now();
+    const current = apiState.current;
+    if (!current || !current.title) {
+      return null;
+    }
+    if (now - current.at > CURRENT_TTL_MS) {
+      apiState.current = null;
+      return null;
+    }
+    return current;
+  }
+
   function readTrackText() {
+    // Разметка VK меняется без предупреждения, и на странице плейлиста
+    // селектор названия трека попадает в заголовок раздела - виджет
+    // показывал «Моя музыка». Данные API надёжнее, но и они не должны
+    // забивать разметку, когда та попала в точку: если заголовок со
+    // страницы известен как настоящий трек, доверяем ему.
     let title = pickText(TITLE_SELECTORS);
     if (!title || PLACEHOLDER.test(title)) {
       title = titleFromDocumentTitle();
     }
     const artist = pickText(ARTIST_SELECTORS);
-    return { title: title, artist: artist };
+    const current = currentTrack();
+
+    if (current && !durationFor(artist, title)) {
+      return { title: current.title, artist: current.artist || "", fromApi: true };
+    }
+    return { title: title, artist: artist, fromApi: false };
   }
 
-  function readCoverUrl() {
+  function readCoverUrl(fromApi) {
+    // Обложка из API точнее: в разметке страницы легко схватить картинку
+    // альбома плейлиста вместо обложки играющего трека. Но если название
+    // взято из разметки, обложку тоже берём оттуда - она соответствует
+    // тому, что сейчас на экране.
+    if (fromApi) {
+      const current = currentTrack();
+      if (current && current.coverUrl) {
+        return current.coverUrl;
+      }
+    }
     for (const sel of COVER_SELECTORS) {
       let nodes;
       try {
@@ -795,12 +868,20 @@
     const trackKey = text.title + "|" + text.artist;
     const where = readPosition(media, playing, trackKey, Date.now());
     const api = durationFor(text.artist, text.title);
+    const current = currentTrack();
 
     // Приоритет длительности: media.duration (точные часы плеера), затем
     // ответ API. Если ничего точного нет - не показываем ничего, оценка по
     // скорости ползунка в свёрнутой вкладке в разы завышает результат.
     let dur = where.dur;
     let durExact = where.durExact;
+    // Длительность из "текущего трека" берём только если название взято
+    // из него же. Иначе они могут разойтись: в разметке уже другой трек,
+    // а из API пришёл предыдущий - и полоса показывала бы чужое время.
+    if (!durExact && text.fromApi && current && current.dur > 0) {
+      dur = current.dur;
+      durExact = true;
+    }
     if (!durExact && api && api.dur > 0) {
       dur = api.dur;
       durExact = true;
@@ -813,7 +894,7 @@
       pos = where.frac * dur;
     }
 
-    const coverUrl = readCoverUrl() || (api ? api.coverUrl : "");
+    const coverUrl = readCoverUrl(text.fromApi) || (api ? api.coverUrl : "");
 
     return {
       title: text.title,
