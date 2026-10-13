@@ -75,6 +75,7 @@ class FakeWidget:
     def __init__(self):
         self.messages: queue.Queue = queue.Queue()
         self.connections = 0
+        self.errors: list[str] = []
         self.token = "проверка-" + str(int(time.time()))
         self._server = socket.socket()
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -95,6 +96,10 @@ class FakeWidget:
                 continue
             except OSError:
                 return
+            except Exception:
+                # Подделка живёт ради проверки: любая неожиданность в
+                # чужом коде не должна обрывать её работу молча.
+                continue
             self.connections += 1
             threading.Thread(target=self._handle, args=(conn,),
                              daemon=True).start()
@@ -115,8 +120,8 @@ class FakeWidget:
                 if data is None:
                     break
                 self.messages.put(data)
-        except (OSError, ipc.ProtocolError):
-            pass
+        except Exception as exc:  # noqa: BLE001 - подделка не должна падать
+            self.errors.append(repr(exc))
         finally:
             for stream in (stream_in, stream_out):
                 try:
@@ -238,6 +243,8 @@ def main() -> int:
     lines.append("Подключений к виджету: %d" % widget.connections)
     lines.append("Всего сообщений: %d" % len(received))
     lines.append("Из них состояний: %d" % len(states))
+    if widget.errors:
+        lines.append("Ошибки подделки: " + "; ".join(widget.errors[:3]))
     if received:
         lines.append("Типы сообщений: %s" % sorted(
             {str(m.get("t")) for m in received}))

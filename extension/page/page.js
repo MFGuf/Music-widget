@@ -179,11 +179,11 @@ const apiMeta = apiState.meta;
     }
   }
 
-  // Запрос ровно одного трека: audio.get и подобные. Ответ на список
-  // плейлиста текущим треком не считается - там их десятки.
-  function isSingleTrackRequest(url) {
-    return /method\/(audio\.get|audio\.market[._]?get|audio\.search)\b/i.test(
-      String(url || ""));
+// Запрос ровно одного трека. Ответ на список плейлиста текущим треком не
+// станет: его items - массив, и absorbApiJson помечает элементы как
+// "не текущие". Поэтому достаточно узнать сам метод, а не разбирать адрес.
+function isSingleTrackRequest(url) {
+    return /audio\.get\b/i.test(String(url || ""));
   }
 
   function absorbApiText(text, url) {
@@ -209,8 +209,15 @@ const apiMeta = apiState.meta;
     }
   }
 
-  function looksLikeApi(url) {
-    return /(^|\/\/)api\.vk\.(com|ru)\/method\//i.test(String(url || ""));
+  // Ответы VK приходят не только с api.vk.com/method: тот же плеер ходит на
+// vk.ru/method, на /al_... и на /api/.... Узкий список адресов приводил к
+// тому, что мы не видели ни одного ответа и гадали, где ошибка.
+function looksLikeApi(url) {
+    const u = String(url || "");
+    if (/\/\/api\.vk\.(com|ru)\//i.test(u)) {
+      return true;
+    }
+    return /vk\.(com|ru)\/(method\/|al_|api\b)/i.test(u);
   }
 
   // Счётчик перехваченных ответов и последние адреса. Нужны для диагностики:
