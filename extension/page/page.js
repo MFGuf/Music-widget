@@ -133,7 +133,7 @@ const apiMeta = apiState.meta;
   // и обложка.
   const CURRENT_TTL_MS = 10 * 60 * 1000;
 
-  function rememberTrack(artist, title, dur, coverUrl, asCurrent) {
+  function rememberTrack(artist, title, dur, coverUrl, asCurrent, id) {
     if (!title || !isFinite(dur) || dur <= 0) {
       return;
     }
@@ -148,18 +148,72 @@ const apiMeta = apiState.meta;
     }
     const key = metaKey(artist, title);
     const previous = apiMeta.get(key);
-    // Один и тот же трек встречается в плейлисте десятки раз; переписываем
-    // запись, только если данные изменились, иначе карта растёт без нужды.
-    if (previous && previous.dur === dur && previous.coverUrl === coverUrl) {
-      return;
-    }
-    if (apiMeta.size > 200) {
-      const oldest = apiMeta.keys().next();
-      if (!oldest.done) {
-        apiMeta.delete(oldest.value);
+    // Один и тот же трек встречается в плейлисте десятки раз; обновляем
+    // запись только если данные изменились. Метку времени обновляем всегда:
+    // по ней среди совпавших по длительности треков выбирается самый
+    // свежий из остальных.
+    if (!previous || previous.dur !== dur || previous.coverUrl !== coverUrl) {
+      if (apiMeta.size > 200) {
+        const oldest = apiMeta.keys().next();
+        if (!oldest.done) {
+          apiMeta.delete(oldest.value);
+        }
       }
     }
-    apiMeta.set(key, { dur: dur, coverUrl: coverUrl || (previous ? previous.coverUrl : "") });
+    apiMeta.set(key, {
+      dur: dur,
+      coverUrl: coverUrl || (previous ? previous.coverUrl : ""),
+      title: title,
+      artist: artist || "",
+      id: id || (previous ? previous.id : 0),
+      at: Date.now(),
+    });
+  }
+
+  // Поиск играющего трека среди уже загруженных.
+  //
+  // На странице плейлиста VK не присылает отдельный запрос на включённый
+  // трек: он берёт его из уже загруженного списка. Поэтому "текущим" по
+  // запросу становится никто, и виджет показывает заголовок раздела.
+  // Зато у играющего звука есть точная длительность - её мы и сверяем с
+  // кэшем. Длительность трека уникальна практически всегда.
+  function trackByDuration(dur) {
+    if (!dur || !isFinite(dur) || dur <= 0) {
+      return null;
+    }
+    let best = null;
+    for (const meta of apiMeta.values()) {
+      // Полсекунды - щедрый запас: длительности приходят целыми, но
+      // округление в разных местах иногда отличается на доли секунды.
+      if (Math.abs(meta.dur - dur) > 0.75) {
+        continue;
+      }
+      if (!best || meta.at > best.at) {
+        best = meta;
+      }
+    }
+    return best;
+  }
+
+  // То же самое, но по идентификатору из адреса звука, когда он там есть.
+  // Надёжнее длительности, но встречается не всегда.
+  function trackById(src) {
+    if (!src) {
+      return null;
+    }
+    const text = String(src);
+    let best = null;
+    for (const meta of apiMeta.values()) {
+      if (!meta.id) {
+        continue;
+      }
+      if (text.indexOf(String(meta.id)) >= 0) {
+        if (!best || meta.at > best.at) {
+          best = meta;
+        }
+      }
+    }
+    return best;
   }
 
   // Ответы VK бывают вложенными (execute.multiple), поэтому обходим дерево.
@@ -180,7 +234,8 @@ const apiMeta = apiState.meta;
       : (typeof node.owner_name === "string" ? node.owner_name : "");
     const dur = Number(node.duration);
     if (title && isFinite(dur) && dur > 0) {
-      rememberTrack(artist, title, dur, pickCoverUrl(node), asCurrent);
+      rememberTrack(artist, title, dur, pickCoverUrl(node), asCurrent,
+                    node.id || node.audio_id || node.audioId || 0);
     }
     for (const key of Object.keys(node)) {
       absorbApiJson(node[key], depth + 1, false);
@@ -453,23 +508,47 @@ function looksLikeApi(url) {
     return raw;
   }
 
-  function currentTrack() {
+  // Снимок записи кэша в том же виде, что и current.
+  function fromMeta(meta) {
+    return {
+      artist: meta.artist || "",
+      title: meta.title,
+      dur: meta.dur,
+      coverUrl: meta.coverUrl || "",
+      at: meta.at,
+    };
+  }
+
+  function currentTrack(media) {
     // Данные о текущем треке из API, пока не устарели. После смены трека
     // приходит новый ответ VK, поэтому десяти минут с запасом хватает, а
     // старый трек не будет висеть на виджете вечно.
     const now = Date.now();
     const current = apiState.current;
-    if (!current || !current.title) {
-      return null;
+    if (current && current.title && now - current.at <= CURRENT_TTL_MS) {
+      return current;
     }
-    if (now - current.at > CURRENT_TTL_MS) {
-      apiState.current = null;
-      return null;
+    // Одиночного запроса могло не быть вовсе: на странице плейлиста VK
+    // играющий трек берётся из уже загруженного списка. Тогда опознаём его
+    // по самому звуку - сперва по идентификатору в адресе, затем по
+    // точной длительности.
+    if (media) {
+      const byId = trackById(media.currentSrc || media.src || "");
+      if (byId) {
+        return fromMeta(byId);
+      }
+      const dur = Number(media.duration);
+      if (isFinite(dur) && dur > 0) {
+        const byDur = trackByDuration(dur);
+        if (byDur) {
+          return fromMeta(byDur);
+        }
+      }
     }
-    return current;
+    return null;
   }
 
-  function readTrackText() {
+  function readTrackText(media) {
     // Разметка VK меняется без предупреждения, и на странице плейлиста
     // селектор названия трека попадает в заголовок раздела - виджет
     // показывал «Моя музыка». Данные API надёжнее, но и они не должны
@@ -480,7 +559,7 @@ function looksLikeApi(url) {
       title = titleFromDocumentTitle();
     }
     const artist = pickText(ARTIST_SELECTORS);
-    const current = currentTrack();
+    const current = currentTrack(media);
 
     if (current && !durationFor(artist, title)) {
       return { title: current.title, artist: current.artist || "", fromApi: true };
@@ -488,13 +567,13 @@ function looksLikeApi(url) {
     return { title: title, artist: artist, fromApi: false };
   }
 
-  function readCoverUrl(fromApi) {
+  function readCoverUrl(fromApi, media) {
     // Обложка из API точнее: в разметке страницы легко схватить картинку
     // альбома плейлиста вместо обложки играющего трека. Но если название
     // взято из разметки, обложку тоже берём оттуда - она соответствует
     // тому, что сейчас на экране.
     if (fromApi) {
-      const current = currentTrack();
+      const current = currentTrack(media);
       if (current && current.coverUrl) {
         return current.coverUrl;
       }
@@ -951,13 +1030,15 @@ function looksLikeApi(url) {
 
   function buildState() {
     const media = bestMedia();
-    const text = readTrackText();
+    // Медиаэлемент идёт первым: по его длительности и адресу мы узнаём
+    // играющий трек, и без него название пришлось бы искать по разметке.
+    const text = readTrackText(media);
     const fromButton = playButtonState();
     const playing = detectPlaying(media, fromButton);
     const trackKey = text.title + "|" + text.artist;
     const where = readPosition(media, playing, trackKey, Date.now());
     const api = durationFor(text.artist, text.title);
-    const current = currentTrack();
+    const current = currentTrack(media);
 
     // Приоритет длительности: media.duration (точные часы плеера), затем
     // ответ API. Если ничего точного нет - не показываем ничего, оценка по
@@ -983,7 +1064,7 @@ function looksLikeApi(url) {
       pos = where.frac * dur;
     }
 
-    const coverUrl = readCoverUrl(text.fromApi) || (api ? api.coverUrl : "");
+    const coverUrl = readCoverUrl(text.fromApi, media) || (api ? api.coverUrl : "");
 
     return {
       title: text.title,

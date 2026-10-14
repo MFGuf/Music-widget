@@ -516,6 +516,51 @@ assert("page: остановленный звук больше не считае
   !pausedState.diag || pausedState.diag.media === false,
   JSON.stringify(pausedState.diag));
 
+// --- Опора на сам звук ---------------------------------------------------------
+//
+// Ровно то, что происходит у пользователя: страница плейлиста VK. Отдельного
+// запроса на играющий трек нет - все треки приходят одним списком, и
+// "текущим" по запросу не становится никто. Виджет показывал заголовок
+// раздела. Но у играющего звука есть точная длительность, и в кэше лежат
+// длительности всех треков.
+
+// Сначала список плейлиста - так же, как при открытии страницы.
+await apiCall("https://api.vk.com/method/execute", {
+  response: {
+    items: [
+      { id: 101, title: "Первый трек списка", artist: "Альбом", duration: 300,
+        thumb_src: "https://sun1-96.userapi.com/t101.jpg" },
+      { id: 102, title: "Второй трек списка", artist: "Альбом", duration: 420,
+        thumb_src: "https://sun1-96.userapi.com/t102.jpg" },
+      { id: 103, title: "Тот самый трек", artist: "Исполнитель", duration: 275,
+        thumb_src: "https://sun1-96.userapi.com/t103.jpg" },
+    ],
+  },
+}, "act=load_more");
+
+// Заголовок раздела вместо названия трека - ровно то, что виджет принимал.
+// Одиночного запроса на трек не было: обнуляем его, иначе проверяли бы не то.
+window.__musicWidgetApiState.current = null;
+mockPlayer({ title: "Моя музыка", artist: "", position: 30, duration: 275, playing: true });
+var bySound = await ask("getState", null);
+assertEqual("page: трек опознан по длительности звука, а не по запросу",
+  bySound.title, "Тот самый трек");
+assertEqual("page: исполнитель тоже взят из кэша", bySound.artist, "Исполнитель");
+assertEqual("page: обложка опознанного трека", bySound.coverUrl,
+  "https://sun1-96.userapi.com/t103.jpg");
+assertEqual("page: длительность точная", bySound.dur, 275);
+
+// Чужая длительность не должна подтягивать чужое название.
+mockPlayer({ title: "Моя музыка", artist: "", position: 10, duration: 420, playing: true });
+var other = await ask("getState", null);
+assertEqual("page: другой звук - другой трек", other.title, "Второй трек списка");
+
+// Без звука и без отдельного запроса остаётся вёрстка: и это честно.
+mockPlayer({ title: "Моя музыка", artist: "", media: false });
+var silent = await ask("getState", null);
+assertEqual("page: без звука и без запроса название остаётся из вёрстки",
+  silent.title, "Моя музыка");
+
 // Вложенный ответ execute.multiple разбирается так же.
 await apiCall("https://api.vk.com/method/execute.multiple", {
   response: {
