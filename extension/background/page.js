@@ -55,6 +55,7 @@ function sendState() {
     items: store.lastItems,
     selected: store.selectedKey,
     note: note(),
+    command: store.lastCommand,
   });
 }
 
@@ -90,13 +91,17 @@ host.onCommand = async (msg) => {
       action: action,
       ratio: typeof msg.ratio === "number" ? msg.ratio : null,
     });
-    ok = !!(reply && reply.ok);
-    text = (reply && reply.msg) || "";
+  ok = !!(reply && reply.ok);
+      text = (reply && reply.msg) || "";
   } catch (e) {
     // Обычно это перезагрузка вкладки: content script в ней ещё не поднят.
     ok = false;
     text = String((e && e.message) || e);
   }
+  // Запоминаем результат и сразу пересылаем подпись: так виджет покажет
+  // пользователю, что именно сломалось, без догадок.
+  store.lastCommand = { action: action, ok: ok, msg: trimText(text, 160) };
+  sendState();
   ack(id, ok, text);
 };
 

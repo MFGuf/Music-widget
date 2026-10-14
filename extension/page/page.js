@@ -1435,12 +1435,18 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
       button.click();
       return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
     }
-    // Кнопки может не быть (плеер свёрнут, вёрстка изменилась) - тогда
+    // Кнопки могут быть не найдены (плеер свёрнут, вёрстка изменилась) - тогда
     // управляем медиаэлементом напрямую.
     const what = toggleViaMedia();
-    return what === "нет медиаэлемента"
-      ? { ok: false, msg: "не нашёл ни кнопку плеера, ни медиаэлемент" }
-      : { ok: true, msg: what };
+    if (what === "нет медиаэлемента") {
+      const seen = visibleButtons(8);
+      return {
+        ok: false,
+        msg: "не нашёл ни кнопку плеера, ни медиаэлемент. Видимые кнопки: "
+          + (seen.length ? seen.join(" / ") : "нет"),
+      };
+    }
+    return { ok: true, msg: what };
   }
 
   // Полной остановки в HTMLMediaElement нет, поэтому останавливаем так,
@@ -1469,27 +1475,36 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   // Переключение треков у VK есть только кнопкой: у медиаэлемента нет
   // методов next/previous, а плейлист живёт в закрытом JS-состоянии
   // страницы, до которого расширение не дотягивается.
+  // Перечень видимых кнопок со страницы.
+//
+// Ошибка вида "не нашёл кнопку" сама по себе бесполезна: непонятно, то ли
+// подписи не подошли, то ли кнопок нет вовсе. Список позволяет понять это
+// сразу, не переустанавливая расширение наугад.
+function visibleButtons(limit) {
+    const seen = [];
+    for (const el of document.querySelectorAll(BUTTON_SELECTOR)) {
+      if (seen.length >= limit) {
+        break;
+      }
+      if (!isVisible(el)) {
+        continue;
+      }
+      const meta = buttonMeta(el).replace(/\s+/g, " ").trim();
+      if (meta) {
+        seen.push(meta.slice(0, 34));
+      }
+    }
+    return seen;
+  }
+
   function commandSkip(kind, what) {
     const found = findTransport(kind);
     if (!found) {
-      // Говорим, что мы вообще увидели: по этому списку видно, подписи не
-      // подошли или кнопок нет вовсе, и чинить можно прицельно.
-      const seen = [];
-      for (const el of document.querySelectorAll(BUTTON_SELECTOR)) {
-        if (isVisible(el)) {
-          const meta = buttonMeta(el).trim().slice(0, 30);
-          if (meta) {
-            seen.push(meta);
-          }
-        }
-        if (seen.length >= 6) {
-          break;
-        }
-      }
+      const seen = visibleButtons(8);
       return {
         ok: false,
         msg: "не нашёл кнопку «" + what + "». Видимые кнопки: "
-          + (seen.length ? seen.join(", ") : "нет"),
+          + (seen.length ? seen.join(" / ") : "нет"),
       };
     }
     found.click();

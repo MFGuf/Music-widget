@@ -213,6 +213,9 @@ class BridgeWorker(threading.Thread):
                 "items": message.get("items") or [],
                 "selected": message.get("selected"),
                 "note": message.get("note") or "",
+                # Результат последней команды виджета: что расширение
+                # сделало и с чем. Показывается в окне диагностики.
+                "command": message.get("command"),
             })
         elif kind == "hello":
             self._set_note("Подключено")

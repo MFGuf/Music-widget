@@ -112,6 +112,8 @@ class MusicWidget:
         self.selected: str | None = None
         self.note = "Подключение к браузеру..."
         self.last_state_at = 0.0
+        # Что расширение ответило на последнюю кнопку виджета.
+        self.last_command: dict | None = None
 
         # Подключился ли хост и с какого момента. Без второго поля отличить
         # «расширение ещё не успело прислать первый снимок» от «расширение
@@ -312,6 +314,9 @@ class MusicWidget:
             self.items = state.get("items") or []
             self.selected = state.get("selected")
             self.note = state.get("note") or ""
+            command = state.get("command")
+            if command:
+                self.last_command = command
             self.last_state_at = time.monotonic()
             # Новый снимок отменяет недовыполненную перемотку: браузер уже
             # отчитался о реальном положении дел, доверять ему надо.
@@ -775,10 +780,26 @@ class MusicWidget:
             ("Сейчас играет", str(current.get("title") or "—")),
             ("Название из", self._title_source(current)),
             ("Ответов VK API", self._api_summary(current)),
+            ("Кнопки", self._command_text()),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
             ("Журнал", str(journal.path())),
         ]
+
+    def _command_text(self) -> str:
+        """Ответ расширения на последнее нажатие кнопки виджета.
+
+        Если кнопка не сработала, здесь видно почему - вплоть до перечня
+        кнопок, которые расширение увидело на странице. Без этого молчание
+        неисправной кнопки приходится угадывать.
+        """
+        command = self.last_command or {}
+        action = command.get("action")
+        if not action:
+            return "кнопку ещё не нажимали"
+        mark = "сработала" if command.get("ok") else "НЕ сработала"
+        detail = command.get("msg") or ""
+        return "%s: %s%s" % (action, mark, (" - " + detail) if detail else "")
 
     @staticmethod
     def _title_source(item) -> str:

@@ -428,6 +428,29 @@ def run_checks(w: MusicWidget) -> None:
        all(line[:4].isdigit() and line[4] == "-" for line in tail.splitlines()),
        tail.splitlines()[0][:20] if tail else "")
 
+    # --- 17. Ответ на кнопку в окне диагностики ------------------------------
+    # Неисправная кнопка молчит одинаково при любой причине. Диагностика
+    # обязана называть причину, иначе приходится чинить наугад.
+    w.last_command = None
+    ok("до нажатия кнопок сказано прямо",
+       "ещё не нажимали" in dict(w._status_lines())["Кнопки"])
+
+    w.states.put({"items": [dict(TRACK)], "selected": "tab:7", "note": "Подключено",
+                  "command": {"action": "toggle", "ok": False,
+                              "msg": "не нашёл кнопку. Видимые: play / next"}})
+    w._drain_states()
+    line = dict(w._status_lines())["Кнопки"]
+    ok("неудачная команда помечена как несработавшая", "НЕ сработала" in line, line)
+    ok("в диагностике виден перечень найденных кнопок",
+       "play / next" in line, line)
+
+    w.states.put({"items": [dict(TRACK)], "selected": "tab:7", "note": "Подключено",
+                  "command": {"action": "next", "ok": True, "msg": "кнопка: Icon--next"}})
+    w._drain_states()
+    line = dict(w._status_lines())["Кнопки"]
+    ok("удачная команда помечена как сработавшая",
+       "сработала" in line and "НЕ" not in line, line)
+
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="mw-widget-"))
