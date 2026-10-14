@@ -596,6 +596,25 @@ assert("page: «Моя музыка» - заголовок раздела не �
 assertEqual("page: «Моя музыка» - обложка взята из панели плеера",
   myMusic.coverUrl, "https://sun1-96.userapi.com/now.jpg");
 
+// --- Пауза --------------------------------------------------------------------
+//
+// На паузе звук пропадает: медиаэлемента нет и опознать трек нечем. Но
+// виджет не должен откатываться на заголовок раздела - песня-то та же.
+// Помним опознанный трек и держим его.
+var pausedPanel = document.querySelector(".player-bar button");
+Object.defineProperty(outside, "paused", { value: false, configurable: true });
+window.HTMLMediaElement.prototype.play.call(outside);
+await ask("getState", null);
+
+Object.defineProperty(outside, "paused", { value: true, configurable: true });
+pausedPanel.setAttribute("aria-label", "Воспроизвести");
+var onPause = await ask("getState", null);
+assertEqual("page: на паузе название остаётся прежним", onPause.title, "Реальная песня");
+assertEqual("page: на паузе исполнитель остаётся прежним", onPause.artist,
+  "Тот самый исполнитель");
+assertEqual("page: на паузе обложка остаётся прежней", onPause.coverUrl,
+  "https://sun1-96.userapi.com/now.jpg");
+
 // Возвращаем кэш в прежнее состояние: следующие проверки опираются на него.
 // Обнулять его было нужно здесь, чтобы доказать, что трек найден без API.
 await apiCall("https://api.vk.com/method/audio.get", {

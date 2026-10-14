@@ -98,6 +98,9 @@ const apiState = window.__musicWidgetApiState ||
       lastUrls: [],
       seenAudio: false,
       seenDuration: false,
+      // Последний трек, опознанный надёжно: по API или по панели плеера.
+      // Нужен, чтобы пауза не отбрасывала виджет на заголовок раздела.
+      resolved: null,
     });
 const apiMeta = apiState.meta;
 
@@ -573,8 +576,19 @@ function looksLikeApi(url) {
     // Включаем этот способ только когда обычный поиск ничего не дал или дал
     // заголовок раздела. Иначе он мешал бы работать разметке там, где она
     // ещё в порядке.
+    // Сравнение строгое, без "входит в": иначе заголовок "Название" считали бы
+  // мы самим названием трека "Название трека" и полезли бы искать панель
+  // там, где разметка в порядке. Равенство - достаточно: на «Моя музыке»
+  // в заголовок раздела попадает ровно то же самое, что и в подпись вкладки.
+  function sameText(a, b) {
+    const x = String(a || "").trim().toLowerCase();
+    const y = String(b || "").trim().toLowerCase();
+    return x !== "" && x === y;
+  }
+
     const heading = sectionHeading();
-    const titleIsUseless = !title || PLACEHOLDER.test(title) || title === heading;
+    const titleIsUseless = !title || PLACEHOLDER.test(title)
+      || sameText(title, heading) || sameText(title, titleFromDocumentTitle());
     const panelTitle = titleIsUseless ? titleFromPlayerPanel() : "";
     if (panelTitle) {
       return {
@@ -582,6 +596,24 @@ function looksLikeApi(url) {
         artist: pickText(ARTIST_SELECTORS),
         fromApi: false,
         fromPanel: true,
+      };
+    }
+
+    // На паузе звук пропадает, и опознать трек уже нечем: медиаэлемента нет,
+    // одиночного запроса не будет, и в панели может быть пусто. Но показать
+    // заголовок раздела вместо того, что играло секунду назад, - хуже всего.
+    // Поэтому держим последний надёжно опознанный трек.
+    //
+    // Только когда разметка бесполезна: если страница сама называет трек,
+    // верьем ей, а не памяти.
+    const resolved = apiState.resolved;
+    if (titleIsUseless && resolved && Date.now() - resolved.at <= CURRENT_TTL_MS) {
+      return {
+        title: resolved.title,
+        artist: resolved.artist || "",
+        fromApi: false,
+        fromPanel: true,
+        remembered: true,
       };
     }
 
@@ -708,8 +740,11 @@ function looksLikeApi(url) {
   // любой страницы один, и играющий трек нарисован рядом с его кнопкой.
   // Поэтому ищем не по всей странице, а внутри панели плеера, и
   // отбрасываем текст, совпадающий с заголовком раздела.
-  function playerPanel() {
-    const button = findPlayButton();
+  // Классы элементов, где лежит исполнитель, а не название трека. Ищем по
+// границам слова, иначе "artist" нашёлся бы и внутри "track__name".
+const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
+
+  function playerPanel() {    const button = findPlayButton();
     if (!button) {
       return null;
     }
@@ -741,17 +776,25 @@ function looksLikeApi(url) {
     return (document.title || "").trim();
   }
 
+  const PLAYER_TEXT_SELECTOR =
+    "[class*='track'],[class*='name'],[class*='title'],[class*='artist'],h1,h2,h3,span,div,a";
+
   function titleFromPlayerPanel() {
     const panel = playerPanel();
     if (!panel) {
       return "";
     }
     const heading = sectionHeading();
-    const candidates = panel.querySelectorAll(
-      "[class*='track'],[class*='name'],[class*='title'],[class*='artist'],h1,h2,h3,span,div,a");
+    const docTitle = (document.title || "").trim();
+    const candidates = panel.querySelectorAll(PLAYER_TEXT_SELECTOR);
     let best = "";
     for (const el of candidates) {
       if (panel !== el && !panel.contains(el)) {
+        continue;
+      }
+      // Исполнитель рядом с названием есть всегда, а название - одно.
+      // Смешав их, мы получили бы вместо песни её исполнителя.
+      if (ARTIST_CLASS.test(classText(el))) {
         continue;
       }
       const text = shortText(el, 80);
@@ -759,7 +802,13 @@ function looksLikeApi(url) {
         continue;
       }
       // Заголовок раздела и подпись вкладки - не название трека.
-      if (text === heading || text === (document.title || "").trim()) {
+      if (text === heading || text === docTitle) {
+        continue;
+      }
+      // Контейнеры пропускаем. Их собственный текст - это всё, что внутри:
+      // у панели плеера, где название пустое, остаётся один исполнитель,
+      // и он оказывался короче настоящего названия.
+      if (hasOwnChildText(el)) {
         continue;
       }
       // Короткое из длинного: в панели есть и исполнитель, и вся строка
@@ -769,6 +818,16 @@ function looksLikeApi(url) {
       }
     }
     return best;
+  }
+
+  function hasOwnChildText(el) {
+    const inner = el.querySelectorAll(PLAYER_TEXT_SELECTOR);
+    for (const child of inner) {
+      if (child !== el && shortText(child, 80)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Признак берём один раз за опрос: playButtonState() обходит все кнопки
@@ -1164,6 +1223,18 @@ function looksLikeApi(url) {
     }
 
     const coverUrl = readCoverUrl(text.fromApi, media) || (api ? api.coverUrl : "");
+
+    // Запоминаем только то, во что есть основание верить: данные API или
+    // панель плеера. Всё, что нашлось общими селекторами, может оказаться
+    // заголовком раздела, и тогда мы запомнили бы именно ошибку.
+    if (text.fromApi || text.fromPanel) {
+      apiState.resolved = {
+        title: text.title,
+        artist: text.artist || "",
+        coverUrl: coverUrl || "",
+        at: Date.now(),
+      };
+    }
 
     return {
       title: text.title,
