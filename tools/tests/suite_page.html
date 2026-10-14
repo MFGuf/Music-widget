@@ -515,6 +515,10 @@ var pausedState = await ask("getState", null);
 assert("page: остановленный звук больше не считается играющим",
   !pausedState.diag || pausedState.diag.media === false,
   JSON.stringify(pausedState.diag));
+// Помечаем завершившимся, а не просто остановленным: команды обращаются
+// и к остановленному звуку (на нём пауза и есть), и без этого метки
+// следующие проверки видели бы звук, которого на странице нет.
+Object.defineProperty(outside, "ended", { value: true, configurable: true });
 
 // --- Опора на сам звук ---------------------------------------------------------
 //
@@ -596,27 +600,9 @@ assert("page: «Моя музыка» - заголовок раздела не �
 assertEqual("page: «Моя музыка» - обложка взята из панели плеера",
   myMusic.coverUrl, "https://sun1-96.userapi.com/now.jpg");
 
-// --- Пауза --------------------------------------------------------------------
-//
-// На паузе звук пропадает: медиаэлемента нет и опознать трек нечем. Но
-// виджет не должен откатываться на заголовок раздела - песня-то та же.
-// Помним опознанный трек и держим его.
-var pausedPanel = document.querySelector(".player-bar button");
-Object.defineProperty(outside, "paused", { value: false, configurable: true });
-window.HTMLMediaElement.prototype.play.call(outside);
-await ask("getState", null);
-
-Object.defineProperty(outside, "paused", { value: true, configurable: true });
-pausedPanel.setAttribute("aria-label", "Воспроизвести");
-var onPause = await ask("getState", null);
-assertEqual("page: на паузе название остаётся прежним", onPause.title, "Реальная песня");
-assertEqual("page: на паузе исполнитель остаётся прежним", onPause.artist,
-  "Тот самый исполнитель");
-assertEqual("page: на паузе обложка остаётся прежней", onPause.coverUrl,
-  "https://sun1-96.userapi.com/now.jpg");
-
-// Возвращаем кэш в прежнее состояние: следующие проверки опираются на него.
-// Обнулять его было нужно здесь, чтобы доказать, что трек найден без API.
+// Возвращаем кэш в прежнее состояние: дальнейшие проверки опираются на
+// него. Обнулять его было нужно здесь, чтобы доказать, что трек на странице
+// «Моя музыка» находится вообще без данных API.
 await apiCall("https://api.vk.com/method/audio.get", {
   response: {
     items: [
@@ -625,33 +611,7 @@ await apiCall("https://api.vk.com/method/audio.get", {
     ],
   },
 });
-document.body.innerHTML = "";
-
-// Вложенный ответ execute.multiple разбирается так же.
-await apiCall("https://api.vk.com/method/execute.multiple", {
-  response: {
-    "audio.get": { response: { items: [
-      { title: "Вложенный", artist: "Группа", duration: 301 },
-    ] } },
-  },
-});
-mockPlayer({ title: "Вложенный", artist: "Группа", media: false });
-st = await ask("getState", null);
-assertEqual("page: вложенный ответ execute.multiple разобран", st.dur, 301);
-
-// Провал запроса не должен ломать страницу.
-window.__fetchBroken = true;
-var rejected = false;
-try {
-  await window.fetch("https://api.vk.com/method/audio.get");
-} catch (e) {
-  rejected = true;
-}
-window.__fetchBroken = false;
-assert("page: ошибка сети доходит до вызывающего", rejected === true);
-mockPlayer({ title: "Кино", artist: "Дельфин", media: false });
-st = await ask("getState", null);
-assert("page: после ошибки скрипт продолжает работать", !!st && typeof st.title === "string");
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover: true });
 
 // --- команды: play/pause и stop ---------------------------------------------
 
@@ -687,6 +647,10 @@ assert("page: без кнопки toggle работает через audio",
   !!res && res.ok === true && res.msg === "media-play", JSON.stringify(res));
 
 // Ни кнопок, ни медиаэлемента - честная ошибка, а не молчание.
+// Помеченный завершившимся: без этого в любойMedia() остался бы он сам -
+// так и должно быть в жизни, но для этой проверки надо, чтобы не
+// осталось ничего вовсе.
+Object.defineProperty(mediaOnly, "ended", { value: true, configurable: true });
 document.body.innerHTML =
   '<div class="track-name"><div class="track-name__title">Пусто</div></div>';
 res = await ask("cmd", { action: "toggle" });
@@ -1009,6 +973,91 @@ assert("page: прежний токен после обновления боль
 mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover: true });
 st = await ask("getState", null);
 assertEqual("page: длительность из API пережила повторную вставку", st.dur, 245);
+
+// --- Пауза --------------------------------------------------------------------
+//
+// На паузе звук пропадает: медиаэлемента нет и опознать трек нечем. Но
+// виджет не должен откатываться на заголовок раздела - песня-то та же.
+// Помним опознанный трек и держим его.
+//
+// Блок стоит последним намеренно: он оставляет запомненный звук, и любые
+// проверки после него смотрели бы не на свои данные.
+window.__musicWidgetApiState.current = null;
+window.__musicWidgetApiState.meta.clear();
+window.__musicWidgetApiState.resolved = null;
+document.body.innerHTML = [
+  '<h1>Моя музыка</h1>',
+  '<div class="player-bar" style="width:600px">',
+  '  <img class="player-bar__cover" src="https://sun1-96.userapi.com/now.jpg">',
+  '  <div class="track-name">',
+  '    <div class="track-name__title">Реальная песня</div>',
+  '    <div class="track-name__artist">Тот самый исполнитель</div>',
+  '  </div>',
+  '  <button class="Icon Icon--play" style="width:40px;height:40px"',
+  '    aria-label="Пауза"></button>',
+  '</div>',
+].join("\n");
+
+// Звук, как у VK, живёт вне страницы.
+var pausedSound = document.createElement("audio");
+pausedSound.src = "https://vk.com/track.mp3";
+Object.defineProperty(pausedSound, "duration", { value: 275, configurable: true });
+Object.defineProperty(pausedSound, "paused", { value: false, configurable: true });
+Object.defineProperty(pausedSound, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(pausedSound);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+var playingNow = await ask("getState", null);
+assertEqual("page: до паузы песня известна", playingNow.title, "Реальная песня");
+
+Object.defineProperty(pausedSound, "paused", { value: true, configurable: true });
+document.querySelector(".player-bar button")
+  .setAttribute("aria-label", "Воспроизвести");
+var onPause = await ask("getState", null);
+assertEqual("page: на паузе название остаётся прежним", onPause.title, "Реальная песня");
+assertEqual("page: на паузе исполнитель остаётся прежним", onPause.artist,
+  "Тот самый исполнитель");
+assertEqual("page: на паузе обложка остаётся прежней", onPause.coverUrl,
+  "https://sun1-96.userapi.com/now.jpg");
+
+// Возвращаем кэш в прежнее состояние: следующие проверки опираются на него.
+// Обнулять его было нужно здесь, чтобы доказать, что трек найден без API.
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { title: "Кино", artist: "Дельфин", duration: 245,
+        thumb_src: "https://sun1-96.userapi.com/c1.jpg" },
+    ],
+  },
+});
+document.body.innerHTML = "";
+
+// Вложенный ответ execute.multiple разбирается так же.
+await apiCall("https://api.vk.com/method/execute.multiple", {
+  response: {
+    "audio.get": { response: { items: [
+      { title: "Вложенный", artist: "Группа", duration: 301 },
+    ] } },
+  },
+});
+mockPlayer({ title: "Вложенный", artist: "Группа", media: false });
+st = await ask("getState", null);
+assertEqual("page: вложенный ответ execute.multiple разобран", st.dur, 301);
+
+// Провал запроса не должен ломать страницу.
+window.__fetchBroken = true;
+var rejected = false;
+try {
+  await window.fetch("https://api.vk.com/method/audio.get");
+} catch (e) {
+  rejected = true;
+}
+window.__fetchBroken = false;
+assert("page: ошибка сети доходит до вызывающего", rejected === true);
+mockPlayer({ title: "Кино", artist: "Дельфин", media: false });
+st = await ask("getState", null);
+assert("page: после ошибки скрипт продолжает работать", !!st && typeof st.title === "string");
+
 
     done();
   } catch (e) {

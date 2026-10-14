@@ -76,6 +76,7 @@ class FakeWidget:
         self.messages: queue.Queue = queue.Queue()
         self.connections = 0
         self.errors: list[str] = []
+        self._out = None
         self.token = "проверка-" + str(int(time.time()))
         self._server = socket.socket()
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -107,6 +108,7 @@ class FakeWidget:
     def _handle(self, conn) -> None:
         stream_in = conn.makefile("rb")
         stream_out = conn.makefile("wb")
+        self._out = stream_out
         try:
             message = ipc.read_message(stream_in)
             if not isinstance(message, dict):
@@ -139,6 +141,12 @@ class FakeWidget:
         except OSError:
             pass
         ipc.clear_endpoint()
+
+    def send(self, message: dict) -> None:
+        """Отправляет виджету команду - ровно так же, как это делает виджет."""
+        if self._out is None:
+            raise RuntimeError("виджет ещё не подключён")
+        ipc.write_message(self._out, message)
 
     def snapshot(self) -> list:
         out = []
@@ -216,11 +224,45 @@ def main() -> int:
                          "началась, виновато расширение.")
 
         deadline = time.time() + WAIT_SECONDS
+        collected = []
         while time.time() < deadline:
-            if widget.snapshot():
+            batch = widget.snapshot()
+            if batch:
+                collected += batch
                 break
             time.sleep(0.5)
         time.sleep(2.0)
+        collected += widget.snapshot()
+
+        # Команда с кнопки виджета. Проверяем её так же, как состояние:
+        # отправляем и ждём ответа расширения. Молчание здесь означало бы
+        # то же, что и молчание состояния - обрыв где-то на пути.
+        widget.snapshot()
+        acks = []
+        for action in ("toggle", "prev", "next"):
+            try:
+                widget.send({"v": 1, "t": "cmd", "action": action,
+                             "key": "tab:1", "id": 99})
+            except Exception as exc:
+                lines.append("команда %s не отправлена: %r" % (action, exc))
+                continue
+            got = None
+            wait_until = time.time() + 12
+            while time.time() < wait_until and got is None:
+                for message in widget.snapshot():
+                    collected.append(message)
+                    if message.get("t") == "ack":
+                        got = message
+                if got is None:
+                    time.sleep(0.4)
+            acks.append((action, got))
+        for action, got in acks:
+            if got is None:
+                lines.append("команда %s: ответа нет" % action)
+            else:
+                lines.append("команда %s: ok=%s msg=%r"
+                             % (action, got.get("ok"), got.get("msg")))
+        commands_ok = all(got is not None for _, got in acks)
         check_mv2.kill(appeared)
     except Exception as exc:  # noqa: BLE001
         lines.append("Ошибка проверки: " + repr(exc))
@@ -237,9 +279,8 @@ def main() -> int:
         server.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    received = widget.snapshot()
+    received = collected
     states = [m for m in received if m.get("t") == "state"]
-
     lines.append("Подключений к виджету: %d" % widget.connections)
     lines.append("Всего сообщений: %d" % len(received))
     lines.append("Из них состояний: %d" % len(states))
@@ -252,7 +293,7 @@ def main() -> int:
         lines.append("Пример состояния: " + json.dumps(
             message, ensure_ascii=False)[:300])
 
-    ok = bool(states)
+    ok = bool(states) and commands_ok
     lines.append("")
     lines.append("Вывод: расширение шлёт состояние."
                  if ok else "Вывод: расширение НЕ шлёт состояние.")

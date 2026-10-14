@@ -1268,16 +1268,22 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   // --- команды ----------------------------------------------------------------
 
   // Кнопки VK не имеют стабильных id, поэтому ищем их по подписям.
-  const BUTTON_SELECTOR = 'button,[role="button"],[data-test-id],[class*="Icon"],[class*="Tappable"]';
+  // Селектор широкий намеренно: подписи у VK от версии к версии меняются,
+  // и кнопка то подписана через aria-label, то помечена классом, то лежит
+  // под data-test-id.
+  const BUTTON_SELECTOR =
+    'button,[role="button"],[class*="Icon"],[class*="icon"],[class*="Tappable"],[data-test-id],[aria-label],[title]';
 
+  // Подпись собираем из всех имён разом: одна только aria-label находила
+  // кнопки переключения через раз.
   function buttonMeta(el) {
     return [
       el.getAttribute("aria-label") || "",
       el.getAttribute("title") || "",
-      classText(el),
       el.getAttribute("data-test-id") || "",
+      classText(el),
       (el.textContent || "").trim().slice(0, 40),
-    ].join(" | ");
+    ].join(" ");
   }
 
   function isVisible(el) {
@@ -1306,6 +1312,62 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
       }
     }
     return null;
+  }
+
+  // Подпись кнопки собирается из всех её имён разом: aria-label, title,
+  // data-test-id, классы и подпись внутри. У VK кнопки переключения
+  // подписаны по-разному от версии к версии, и одна только aria-label
+  // находила их через раз.
+  // --- кнопки переключения трека ---------------------------------------------
+  //
+  // По подписи находятся почти всегда. Если не нашлись - берём расположение:
+  // в панели плеера кнопки стоят слева направо «предыдущий, пауза,
+  // следующий», и это единственный ориентир, который не зависит от слов.
+  function transportButtons() {
+    const panel = playerPanel();
+    if (!panel) {
+      return null;
+    }
+    const found = [];
+    for (const el of panel.querySelectorAll(BUTTON_SELECTOR)) {
+      if (!isVisible(el)) {
+        continue;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 12 || rect.height < 12) {
+        continue;
+      }
+      found.push({ el: el, x: rect.left, y: rect.top });
+    }
+    if (found.length < 3) {
+      return null;
+    }
+    // Строки в панели несколько (обложка, трек, кнопки). Берём нижнюю -
+    // там живёт транспорт.
+    const maxY = Math.max.apply(null, found.map((item) => item.y));
+    const row = found
+      .filter((item) => item.y > maxY - 24)
+      .sort((a, b) => a.x - b.x);
+    if (row.length < 3) {
+      return null;
+    }
+    const play = row.find((item) => RE_TOGGLE.test(buttonMeta(item.el)))
+      || row[Math.floor(row.length / 2)];
+    return {
+      prev: row[0] !== play ? row[0] : row[row.length - 1],
+      toggle: play,
+      next: row[row.length - 1] !== play ? row[row.length - 1] : row[0],
+    };
+  }
+
+  function findTransport(kind) {
+    const byLabel = kind === "prev" ? findPrevButton()
+      : kind === "next" ? findNextButton() : findToggleButton();
+    if (byLabel) {
+      return byLabel;
+    }
+    const guess = transportButtons();
+    return guess ? guess[kind] : null;
   }
 
   // Общие слова, которые почти всегда означают не то, что нужно.
@@ -1338,7 +1400,17 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   // Ищем видимый медиаэлемент: на паузе он всё равно подходит.
   function anyMedia() {
     const list = mediaElements();
-    return list[0] || null;
+    if (list.length) {
+      return list[0];
+    }
+    // Плеер VK держит звук вне страницы - элемент помнит хук play(). Без
+    // этого «пауза» и «воспроизведение» не находили медиаэлемента и
+    // отвечали «не нашёл ни кнопку, ни медиаэлемент», хотя звук был.
+    const hooked = playback.element;
+    if (hooked && !hooked.ended) {
+      return hooked;
+    }
+    return null;
   }
 
   function toggleViaMedia() {
@@ -1358,7 +1430,7 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   }
 
   function commandToggle() {
-    const button = findToggleButton();
+    const button = findTransport("toggle");
     if (button) {
       button.click();
       return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
@@ -1397,10 +1469,28 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   // Переключение треков у VK есть только кнопкой: у медиаэлемента нет
   // методов next/previous, а плейлист живёт в закрытом JS-состоянии
   // страницы, до которого расширение не дотягивается.
-  function commandSkip(button, what) {
-    const found = button();
+  function commandSkip(kind, what) {
+    const found = findTransport(kind);
     if (!found) {
-      return { ok: false, msg: "не нашёл кнопку «" + what + "»" };
+      // Говорим, что мы вообще увидели: по этому списку видно, подписи не
+      // подошли или кнопок нет вовсе, и чинить можно прицельно.
+      const seen = [];
+      for (const el of document.querySelectorAll(BUTTON_SELECTOR)) {
+        if (isVisible(el)) {
+          const meta = buttonMeta(el).trim().slice(0, 30);
+          if (meta) {
+            seen.push(meta);
+          }
+        }
+        if (seen.length >= 6) {
+          break;
+        }
+      }
+      return {
+        ok: false,
+        msg: "не нашёл кнопку «" + what + "». Видимые кнопки: "
+          + (seen.length ? seen.join(", ") : "нет"),
+      };
     }
     found.click();
     return { ok: true, msg: "кнопка: " + buttonMeta(found).slice(0, 60) };
@@ -1526,9 +1616,9 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
       case "stop":
         return commandStop();
       case "next":
-        return commandSkip(findNextButton, "следующий трек");
+        return commandSkip("next", "следующий трек");
       case "prev":
-        return commandSkip(findPrevButton, "предыдущий трек");
+        return commandSkip("prev", "предыдущий трек");
       case "seek":
         return commandSeek(ratio);
       default:
