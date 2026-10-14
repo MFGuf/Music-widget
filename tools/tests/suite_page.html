@@ -974,7 +974,65 @@ mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover:
 st = await ask("getState", null);
 assertEqual("page: длительность из API пережила повторную вставку", st.dur, 245);
 
-// --- Пауза --------------------------------------------------------------------
+// --- Две песни с одинаковой длительностью --------------------------------------
+//
+// В плейлисте на 109 песен длительности иногда совпадают - ремиксы, записи
+// концерта. Одной длительности мало, и виджет показывал чужое название.
+// Различать их должна обложка: у каждой песни она своя.
+
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { id: 201, title: "Студийная версия", artist: "Группа", duration: 245,
+        thumb_src: "https://sun1-96.userapi.com/Zz11Zz/w100.jpg" },
+      { id: 202, title: "Концертная версия", artist: "Группа", duration: 245,
+        thumb_src: "https://sun1-96.userapi.com/Qq22Qq/w300.jpg" },
+    ],
+  },
+});
+window.__musicWidgetApiState.current = null;
+document.body.innerHTML = [
+  '<h1>Моя музыка</h1>',
+  '<div class="player-bar" style="width:600px">',
+  '  <img class="player-bar__cover"',
+  '    src="https://sun1-96.userapi.com/Qq22Qq/w300.jpg">',
+  '  <div class="track-name">',
+  '    <div class="track-name__title">Концертная версия</div>',
+  '  </div>',
+  '  <button class="Icon Icon--play" style="width:40px;height:40px"',
+  '    aria-label="Пауза"></button>',
+  '</div>',
+].join("\n");
+
+// Звук с той же длительностью, что у обеих песен.
+var twin = document.createElement("audio");
+twin.src = "https://vk.com/track.mp3";
+Object.defineProperty(twin, "duration", { value: 245, configurable: true });
+Object.defineProperty(twin, "paused", { value: false, configurable: true });
+Object.defineProperty(twin, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(twin);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+var twinState = await ask("getState", null);
+assertEqual("page: при одинаковой длительности решает обложка",
+  twinState.title, "Концертная версия");
+assertEqual("page: обложка совпавшей песни", twinState.coverUrl,
+  "https://sun1-96.userapi.com/Qq22Qq/w300.jpg");
+assert("page: в диагностике видно, чем опознан трек",
+  twinState.diag && twinState.diag.matchedBy === "обложка",
+  JSON.stringify(twinState.diag));
+
+// Обложка в панели может быть отдана другого размера, чем в API:
+// узнать её надо по части пути, а не по адресу целиком.
+window.__musicWidgetApiState.current = null;
+document.querySelector(".player-bar img").src =
+  "https://sun1-96.userapi.com/Qq22Qq/w600.jpg";
+var resized = await ask("getState", null);
+assertEqual("page: обложка другого размера - та же песня", resized.title,
+  "Концертная версия");
+
+Object.defineProperty(twin, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
 //
 // На паузе звук пропадает: медиаэлемента нет и опознать трек нечем. Но
 // виджет не должен откатываться на заголовок раздела - песня-то та же.

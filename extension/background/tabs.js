@@ -192,7 +192,9 @@ function buildItem(source, state) {
     url: source.url,
     tabId: source.tabId,
     // Диагностика с вкладки - виджет покажет, откуда взялось название.
-    diag: state.diag && typeof state.diag === "object" ? state.diag : null,
+    diag: state.diag && typeof state.diag === "object"
+      ? { ...state.diag, panelCover: state.diag.panelCover || "" }
+      : null,
   };
 }
 

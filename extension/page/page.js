@@ -112,18 +112,68 @@ const apiMeta = apiState.meta;
            String(title || "").trim().toLowerCase();
   }
 
+  function isImageUrl(value) {
+    return typeof value === "string" && /^https?:\/\//i.test(value)
+      && /\.(jpe?g|png|webp)(\?|$)/i.test(value);
+  }
+
   function pickCoverUrl(node) {
+    // Сначала поля, которые точно обложка: они короткие и встречаются
+    // чаще всего. Список неполон - VK отдаёт и другие имена, и вложенные
+    // массивы размеров, - поэтому дальше ищем по всей разметке ответа.
     const fields = [
       "thumb_src", "thumb", "thumb_200", "thumb_100",
       "cover", "album_thumb", "artist_photo",
     ];
     for (const field of fields) {
       const value = node[field];
-      if (typeof value === "string" && value.indexOf("http") === 0) {
+      if (isImageUrl(value)) {
         return value;
       }
     }
+
+    // Вложенные размеры: sizes: [{ url: "...", w: 200, h: 200 }].
+    const sizes = node.sizes;
+    if (Array.isArray(sizes)) {
+      for (const item of sizes) {
+        if (item && isImageUrl(item.url)) {
+          return item.url;
+        }
+      }
+    }
+
+    // Общий случай: любое поле ответа, значение которого похоже на
+    // картинку. Перебор медленный, но выполняется один раз на трек, а не
+    // на каждый кадр.
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+      if (isImageUrl(value)) {
+        return value;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item && typeof item === "object" && isImageUrl(item.url)) {
+            return item.url;
+          }
+        }
+      }
+    }
     return "";
+  }
+
+  // Устойчивый признак одной и той же картинки.
+  //
+  // Одну и ту же обложку VK отдаёт по разным адресам разного размера:
+  // .../AbCdEf/w100.jpg и .../AbCdEf/w300.jpg. Сравнивать адреса целиком
+  // бессмысленно, а вот часть пути до размера - это и есть сама обложка.
+  function coverSignature(url) {
+    const text = String(url || "");
+    const sized = text.match(/\/([A-Za-z0-9_-]{6,})\/w\d+\.(jpe?g|png|webp)/i);
+    if (sized) {
+      return sized[1].toLowerCase();
+    }
+    const plain = text.match(/\/([A-Za-z0-9_-]{6,})\.(jpe?g|png|webp)/i);
+    return plain ? plain[1].toLowerCase() : "";
   }
 
   // Текущий трек по данным API.
@@ -198,21 +248,48 @@ const apiMeta = apiState.meta;
     return best;
   }
 
+  // По обложке. Надёжнее длительности: у разных песен длительность иногда
+  // совпадает (ремиксы, записи концерта), а обложка у каждой своя.
+  function trackByCover(signature) {
+    if (!signature) {
+      return null;
+    }
+    let best = null;
+    for (const meta of apiMeta.values()) {
+      if (coverSignature(meta.coverUrl) !== signature) {
+        continue;
+      }
+      if (!best || meta.at > best.at) {
+        best = meta;
+      }
+    }
+    return best;
+  }
+
   // То же самое, но по идентификатору из адреса звука, когда он там есть.
   // Надёжнее длительности, но встречается не всегда.
   function trackById(src) {
     if (!src) {
       return null;
     }
-    const text = String(src);
+    const ids = String(src).match(/\d{3,}/g);
+    if (!ids || !ids.length) {
+      return null;
+    }
     let best = null;
     for (const meta of apiMeta.values()) {
       if (!meta.id) {
         continue;
       }
-      if (text.indexOf(String(meta.id)) >= 0) {
-        if (!best || meta.at > best.at) {
-          best = meta;
+      const id = String(meta.id);
+      // Ищем именно число целиком: простое "вхождение" давало ложные
+      // совпадения на коротких номерах вроде 42 внутри 1420.
+      for (const token of ids) {
+        if (token === id) {
+          if (!best || meta.at > best.at) {
+            best = meta;
+          }
+          break;
         }
       }
     }
@@ -529,6 +606,7 @@ function looksLikeApi(url) {
     const now = Date.now();
     const current = apiState.current;
     if (current && current.title && now - current.at <= CURRENT_TTL_MS) {
+      apiState.matchedBy = "ответ VK";
       return current;
     }
     // Одиночного запроса могло не быть вовсе: на странице плейлиста VK
@@ -536,19 +614,55 @@ function looksLikeApi(url) {
     // по самому звуку - сперва по идентификатору в адресе, затем по
     // точной длительности.
     if (media) {
-      const byId = trackById(media.currentSrc || media.src || "");
+      const src = media.currentSrc || media.src || "";
+      // Порядок - от самого верного к наименее верному. Обложка идёт перед
+      // длительностью: у разных песен длительность совпадает иногда, а
+      // обложка у каждой своя.
+      const byId = trackById(src);
       if (byId) {
+        apiState.matchedBy = "id";
         return fromMeta(byId);
+      }
+      const signature = coverSignature(panelCoverUrl());
+      const byCover = trackByCover(signature);
+      if (byCover) {
+        apiState.matchedBy = "обложка";
+        return fromMeta(byCover);
       }
       const dur = Number(media.duration);
       if (isFinite(dur) && dur > 0) {
         const byDur = trackByDuration(dur);
         if (byDur) {
+          apiState.matchedBy = "длительность";
           return fromMeta(byDur);
         }
       }
+      apiState.matchedBy = "";
     }
     return null;
+  }
+
+  // Обложка, нарисованная в панели плеера. Именно её видит человек,
+  // значит именно она соответствует играющему треку.
+  function panelCoverUrl() {
+    const panel = playerPanel();
+    if (!panel) {
+      return "";
+    }
+    const images = panel.querySelectorAll("img,[class*='cover'],[class*='thumb']");
+    for (const el of images) {
+      const src = el.currentSrc || el.src
+        || el.getAttribute("src") || el.getAttribute("data-src") || "";
+      if (isImageUrl(src)) {
+        return src;
+      }
+      const style = el.getAttribute && el.getAttribute("style");
+      const url = style && String(style).match(/url\((['"]?)([^)'"]+)\1\)/);
+      if (url && isImageUrl(url[2])) {
+        return url[2];
+      }
+    }
+    return "";
   }
 
   function readTrackText(media) {
@@ -1261,6 +1375,7 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         media: !!media,
         mediaDuration: where.durExact ? dur : 0,
         titleSource: text.fromApi ? "api" : "страница",
+        matchedBy: apiState.matchedBy || "",
       },
     };
   }

@@ -822,6 +822,8 @@ class MusicWidget:
         parts = ["%d ответов" % int(diag.get("apiHits") or 0)]
         if diag.get("apiTracks"):
             parts.append("треков в кэше %d" % int(diag["apiTracks"]))
+        if diag.get("matchedBy"):
+            parts.append("опознан по: %s" % diag["matchedBy"])
         if diag.get("media"):
             parts.append("есть аудиоэлемент")
         return ", ".join(parts)
