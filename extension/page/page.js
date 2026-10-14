@@ -98,6 +98,10 @@ const apiState = window.__musicWidgetApiState ||
       lastUrls: [],
       seenAudio: false,
       seenDuration: false,
+      // Подписка на сообщения вешается один раз на страницу: скрипт
+      // главного мира вставляется и манифестом, и дозагрузкой в открытые
+      // вкладки, а вторая копия выполняла бы каждую команду дважды.
+      listening: false,
       // Последний трек, опознанный надёжно: по API или по панели плеера.
       // Нужен, чтобы пауза не отбрасывала виджет на заголовок раздела.
       resolved: null,
@@ -1545,7 +1549,8 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   }
 
   function commandToggle() {
-    const button = findTransport("toggle");
+    const found = findTransport("toggle");
+    const button = found ? clickTarget(found) : null;
     if (button) {
       button.click();
       return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
@@ -1576,15 +1581,21 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         // currentTime может быть недоступен до загрузки метаданных.
       }
     }
-    const button = findToggleButton();
+    const found = findToggleButton();
+    const button = found ? clickTarget(found) : null;
     if (button && (!media || !media.paused)) {
       // Плеер ещё играет - нажимаем кнопку, чтобы он встал.
       button.click();
       return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
     }
+    const seen = visibleButtons(8);
     return media
       ? { ok: true, msg: "media-pause + в начало" }
-      : { ok: false, msg: "не нашёл ни кнопку плеера, ни медиаэлемент" };
+      : {
+          ok: false,
+          msg: "не нашёл ни кнопку плеера, ни медиаэлемент. Видимые кнопки: "
+            + (seen.length ? seen.join(" / ") : "нет"),
+        };
   }
 
   // Переключение треков у VK есть только кнопкой: у медиаэлемента нет
@@ -1612,9 +1623,27 @@ function visibleButtons(limit) {
     return seen;
   }
 
+    // Что нажимать на самом деле.
+  //
+  // Селектор кнопок широкий намеренно, и поэтому попадает не только на
+  // <button>: подпись с aria-label лежит часто на иконке или на <span>
+  // внутри кнопки, а у них метода click() нет. Ошибка "button.click is not
+  // a function" - это ровно оно: элемент нашли, а нажать его нечем.
+  function clickTarget(el) {
+    let node = el;
+    for (let step = 0; node && step < 5; step++) {
+      if (typeof node.click === "function") {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
   function commandSkip(kind, what) {
     const found = findTransport(kind);
-    if (!found) {
+    const target = found ? clickTarget(found) : null;
+    if (!target) {
       const seen = visibleButtons(8);
       return {
         ok: false,
@@ -1622,8 +1651,8 @@ function visibleButtons(limit) {
           + (seen.length ? seen.join(" / ") : "нет"),
       };
     }
-    found.click();
-    return { ok: true, msg: "кнопка: " + buttonMeta(found).slice(0, 60) };
+    target.click();
+    return { ok: true, msg: "кнопка: " + buttonMeta(target).slice(0, 60) };
   }
 
   // --- перемотка -----------------------------------------------------------
@@ -1775,52 +1804,64 @@ function visibleButtons(limit) {
     }
   }
 
-  window.addEventListener("message", function (ev) {
-    if (ev.source !== window) {
-      return;
-    }
-    const data = ev.data;
-    if (!data || data.__mw !== MSG_VERSION || data.dir !== "toPage") {
-      return;
-    }
+  // Подписка на сообщения тоже должна быть ровно одна.
+  //
+  // Хуки сети и плеера защищены флагом, а эта подписка была единственной
+  // без защиты. Скрипт главного мира вставляется в страницу дважды: сам
+  // манифестом и дозагрузкой в уже открытые вкладки, а также после
+  // обновления расширения. Вторая копия вешала второй обработчик, и любая
+  // команда выполнялась дважды: "пауза" превращалась в play, а потом в
+  // pause - то есть в ничто. Кнопки выглядели мёртвыми.
+  if (!apiState.listening) {
+    apiState.listening = true;
 
-    // init приходит на document_start, раньше скриптов страницы. Повторный
+    window.addEventListener("message", function (ev) {
+      if (ev.source !== window) {
+        return;
+      }
+      const data = ev.data;
+      if (!data || data.__mw !== MSG_VERSION || data.dir !== "toPage") {
+        return;
+      }
+
+        // init приходит на document_start, раньше скриптов страницы. Повторный
     // init - это перезапуск content script после обновления расширения:
     // у новой копии другой токен, и если бы мы его не приняли, вкладка
     // VK замолчала бы до ручной перезагрузки страницы.
     if (data.t === "init") {
-      if (data.token) {
-        token = data.token;
+        if (data.token) {
+          token = data.token;
+        }
+        reply(data.id, { ready: true });
+        return;
       }
-      reply(data.id, { ready: true });
-      return;
-    }
 
-    if (token === null || data.token !== token) {
-      return;
-    }
-
-    if (data.t === "getState") {
-      let payload;
-      try {
-        payload = buildState();
-      } catch (e) {
-        payload = { error: String((e && e.message) || e) };
+      if (token === null || data.token !== token) {
+        return;
       }
-      reply(data.id, payload);
-      return;
-    }
 
-    if (data.t === "cmd") {
-      let result;
-      try {
-        result = runCommand(data.action, data.ratio);
-      } catch (e) {
-        result = { ok: false, msg: String((e && e.message) || e) };
+      if (data.t === "getState") {
+        let payload;
+        try {
+          payload = buildState();
+        } catch (e) {
+          payload = { error: String((e && e.message) || e) };
+        }
+        reply(data.id, payload);
+        return;
       }
-      reply(data.id, result);
-      return;
-    }
-  });
+
+      if (data.t === "cmd") {
+        let result;
+        try {
+          result = runCommand(data.action, data.ratio);
+        } catch (e) {
+          result = { ok: false, msg: String((e && e.message) || e) };
+        }
+        reply(data.id, result);
+        return;
+      }
+    });
+  }
 
   })();

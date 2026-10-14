@@ -940,6 +940,18 @@ assertEqual("page: повторная вставка не навешивает c
 assertEqual("page: повторная вставка не навешивает createMediaElementSource второй раз",
   window.AudioContext.prototype.createMediaElementSource, sourceBefore);
 
+// Команда после повторной вставки обязана выполниться ОДИН раз. Вторая
+// копия скрипта вешала второй обработчик сообщений, и "пауза" превращалась
+// в play, а затем в pause - то есть в ничто. Кнопки выглядели мёртвыми,
+// хотя транспорт исправно отвечал "готово".
+mockPlayer({ playing: false, media: false });
+window.__clicks = [];
+var afterReload = await ask("cmd", { action: "toggle" });
+assert("page: команда после повторной вставки выполнена один раз",
+  !!afterReload && afterReload.ok === true, JSON.stringify(afterReload));
+assertEqual("page: кнопка нажата ровно один раз",
+  window.__clicks.length, 1);
+
 // Новый content script после обновления приходит со своим токеном.
 window.__token = "новый-токен";
 var readyAgain = await ask("init", null);
@@ -974,7 +986,51 @@ mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover:
 st = await ask("getState", null);
 assertEqual("page: длительность из API пережила повторную вставку", st.dur, 245);
 
-// --- Две песни с одинаковой длительностью --------------------------------------
+// --- Подпись не на кнопке ------------------------------------------------------
+//
+// Селектор кнопок широкий: подпись с aria-label лежит часто на иконке или
+// на <span> внутри кнопки, а метода click() у них нет. Нажатие такого
+// элемента падало с "button.click is not a function" - ровно то, что было
+// у пользователя.
+document.body.innerHTML = [
+  '<div class="player-bar" style="width:600px">',
+  '  <div class="track-name"><div class="track-name__title">Песня</div></div>',
+  '  <div class="transport">',
+  '    <button class="Icon" id="real-btn" aria-label="Предыдущий трек"',
+  '      style="width:40px;height:40px">',
+  '      <span class="Icon--prev" aria-label="Предыдущий трек">назад</span>',
+  '    </button>',
+  '    <button class="Icon" id="real-play" aria-label="Воспроизвести"',
+  '      style="width:40px;height:40px">',
+  '      <svg aria-label="Воспроизвести" width="20" height="20"><path d="M0 0h10v10z"></path></svg>',
+  '    </button>',
+  '  </div>',
+  '</div>',
+].join("\n");
+window.__clicks = [];
+document.getElementById("real-play").addEventListener("click", function () {
+  window.__clicks.push("play");
+});
+document.getElementById("real-btn").addEventListener("click", function () {
+  window.__clicks.push("prev");
+});
+
+res = await ask("cmd", { action: "toggle" });
+assert("page: toggle с иконкой внутри кнопки не падает",
+  !!res && res.ok === true, JSON.stringify(res));
+assert("page: нажата сама кнопка, а не иконка",
+  window.__clicks.join(",") === "play",
+  "клики: " + window.__clicks.join(",") + " ответ: " + JSON.stringify(res));
+
+window.__clicks = [];
+res = await ask("cmd", { action: "prev" });
+assert("page: prev с иконкой внутри кнопки не падает",
+  !!res && res.ok === true, JSON.stringify(res));
+assert("page: prev нажал кнопку",
+  window.__clicks.join(",") === "prev",
+  "клики: " + window.__clicks.join(",") + " ответ: " + JSON.stringify(res));
+
+document.body.innerHTML = "";
 //
 // В плейлисте на 109 песен длительности иногда совпадают - ремиксы, записи
 // концерта. Одной длительности мало, и виджет показывал чужое название.
