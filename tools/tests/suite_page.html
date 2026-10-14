@@ -561,6 +561,53 @@ var silent = await ask("getState", null);
 assertEqual("page: без звука и без запроса название остаётся из вёрстки",
   silent.title, "Моя музыка");
 
+// --- «Моя музыка»: ни API, ни селекторов ---------------------------------------
+//
+// Страница «Моя музыка» - список лайкнутых песен. Отдельного запроса на
+// играющий трек VK не делает, и классов, по которым ищут название, на ней
+// нет: обычный поиск приносил заголовок раздела. Но играющий трек всё равно
+// нарисован рядом с кнопкой плеера - и вот тут он находится.
+window.__musicWidgetApiState.current = null;
+window.__musicWidgetApiState.meta.clear();
+document.body.innerHTML = [
+  '<h1>Моя музыка</h1>',
+  '<div class="page">',
+  '  <div class="track"><span class="track__title">Первая лайкнутая</span></div>',
+  '  <div class="track"><span class="track__title">Вторая лайкнутая</span></div>',
+  '</div>',
+  '<div class="player-bar" style="width:600px">',
+  '  <img class="player-bar__cover" src="https://sun1-96.userapi.com/now.jpg">',
+  '  <div class="track-name">',
+  '    <div class="track-name__title">Реальная песня</div>',
+  '    <div class="track-name__artist">Тот самый исполнитель</div>',
+  '  </div>',
+  '  <button class="Icon Icon--play" id="mock-play" style="width:40px;height:40px"',
+  '    aria-label="Пауза"></button>',
+  '</div>',
+].join("\n");
+
+var myMusic = await ask("getState", null);
+assertEqual("page: «Моя музыка» - название берётся из панели плеера",
+  myMusic.title, "Реальная песня");
+assert("page: «Моя музыка» - исполнитель тоже найден",
+  myMusic.artist === "Тот самый исполнитель", myMusic.artist);
+assert("page: «Моя музыка» - заголовок раздела не показан",
+  myMusic.title !== "Моя музыка", myMusic.title);
+assertEqual("page: «Моя музыка» - обложка взята из панели плеера",
+  myMusic.coverUrl, "https://sun1-96.userapi.com/now.jpg");
+
+// Возвращаем кэш в прежнее состояние: следующие проверки опираются на него.
+// Обнулять его было нужно здесь, чтобы доказать, что трек найден без API.
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { title: "Кино", artist: "Дельфин", duration: 245,
+        thumb_src: "https://sun1-96.userapi.com/c1.jpg" },
+    ],
+  },
+});
+document.body.innerHTML = "";
+
 // Вложенный ответ execute.multiple разбирается так же.
 await apiCall("https://api.vk.com/method/execute.multiple", {
   response: {

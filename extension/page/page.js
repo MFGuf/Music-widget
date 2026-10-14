@@ -564,7 +564,28 @@ function looksLikeApi(url) {
     if (current && !durationFor(artist, title)) {
       return { title: current.title, artist: current.artist || "", fromApi: true };
     }
-    return { title: title, artist: artist, fromApi: false };
+
+    // API не помог: такое бывает на «Моя музыке», где отдельного запроса
+    // на играющий трек не приходит. Тогда смотрим панель плеера - играющий
+    // трек нарисован рядом с кнопкой, и это единственное место, где он есть
+    // в разметке надёжно.
+    //
+    // Включаем этот способ только когда обычный поиск ничего не дал или дал
+    // заголовок раздела. Иначе он мешал бы работать разметке там, где она
+    // ещё в порядке.
+    const heading = sectionHeading();
+    const titleIsUseless = !title || PLACEHOLDER.test(title) || title === heading;
+    const panelTitle = titleIsUseless ? titleFromPlayerPanel() : "";
+    if (panelTitle) {
+      return {
+        title: panelTitle,
+        artist: pickText(ARTIST_SELECTORS),
+        fromApi: false,
+        fromPanel: true,
+      };
+    }
+
+    return { title: title, artist: artist, fromApi: false, fromPanel: false };
   }
 
   function readCoverUrl(fromApi, media) {
@@ -646,7 +667,7 @@ function looksLikeApi(url) {
   // "Воспроизвести", когда стоит.
   const PLAY_LABEL = /^(пауза|воспроизвести|воспроизведение|играть|play|pause|resume)$/i;
 
-  function playButtonState() {
+  function findPlayButton() {
     const nodes = document.querySelectorAll('button,[role="button"],[class*="Icon"]');
     let fallback = null;
     for (const el of nodes) {
@@ -660,16 +681,94 @@ function looksLikeApi(url) {
       if (rect.width < 16 || rect.height < 16) {
         continue;
       }
-      const state = /пауза|pause/i.test(name) ? "playing" : "paused";
       // Кнопка внизу страницы - это плеер, а не что-то в шапке.
       if (rect.y > window.innerHeight * 0.55) {
-        return state;
+        return el;
       }
       if (!fallback) {
-        fallback = state;
+        fallback = el;
       }
     }
     return fallback;
+  }
+
+  function playButtonState() {
+    const el = findPlayButton();
+    if (!el) {
+      return null;
+    }
+    const name = (el.getAttribute("aria-label") || el.textContent || "").trim();
+    return /пауза|pause/i.test(name) ? "playing" : "paused";
+  }
+
+  // --- название трека рядом с кнопкой плеера ---------------------------------
+  //
+  // Селекторы по названию класса - лотерея: VK меняет разметку, и на
+  // странице «Моя музыка» они попадали в заголовок раздела. Но плеер у
+  // любой страницы один, и играющий трек нарисован рядом с его кнопкой.
+  // Поэтому ищем не по всей странице, а внутри панели плеера, и
+  // отбрасываем текст, совпадающий с заголовком раздела.
+  function playerPanel() {
+    const button = findPlayButton();
+    if (!button) {
+      return null;
+    }
+    let node = button.parentElement;
+    // Поднимаемся, пока не встретим что-то похожее на панель: обложку или
+    // поля с названием. Слишком далеко уходить нельзя - там вся страница.
+    for (let step = 0; step < 5 && node; step++) {
+      const wide = node.getBoundingClientRect().width > window.innerWidth * 0.5;
+      if (wide && node.querySelector("img,[class*='cover'],[class*='thumb']")) {
+        return node;
+      }
+      if (!wide && node.querySelector("[class*='track'],[class*='name'],[class*='artist'],[class*='title']")) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return button.parentElement;
+  }
+
+  function sectionHeading() {
+    // Заголовок раздела: именно он попадал в виджет вместо названия.
+    const h1 = document.querySelector("h1");
+    if (h1) {
+      const text = (h1.textContent || "").trim();
+      if (text) {
+        return text;
+      }
+    }
+    return (document.title || "").trim();
+  }
+
+  function titleFromPlayerPanel() {
+    const panel = playerPanel();
+    if (!panel) {
+      return "";
+    }
+    const heading = sectionHeading();
+    const candidates = panel.querySelectorAll(
+      "[class*='track'],[class*='name'],[class*='title'],[class*='artist'],h1,h2,h3,span,div,a");
+    let best = "";
+    for (const el of candidates) {
+      if (panel !== el && !panel.contains(el)) {
+        continue;
+      }
+      const text = shortText(el, 80);
+      if (!text || PLACEHOLDER.test(text)) {
+        continue;
+      }
+      // Заголовок раздела и подпись вкладки - не название трека.
+      if (text === heading || text === (document.title || "").trim()) {
+        continue;
+      }
+      // Короткое из длинного: в панели есть и исполнитель, и вся строка
+      // целиком, а название трека - самое короткое из осмысленных.
+      if (!best || text.length < best.length) {
+        best = text;
+      }
+    }
+    return best;
   }
 
   // Признак берём один раз за опрос: playButtonState() обходит все кнопки
