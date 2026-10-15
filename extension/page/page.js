@@ -422,6 +422,50 @@ window.__musicWidgetCover = {
     return best;
   }
 
+  // Точный идентификатор трека из самой разметки.
+  //
+  // Плеер VK держит ссылку на играющий трек в строке плейлиста: адрес
+  // вида /audio-2000_1234567. Если медиаэлемент лежит в этой строке,
+  // идентификатор достаётся прямо из неё, и это единственный способ узнать
+  // трек ТОЧНО. Всё остальное - сравнения по времени и обложке, они
+  // ошибаются, когда рядом лежат похожие песни.
+  function trackIdFromRow(media) {
+    if (!media || !media.isConnected) {
+      return 0;
+    }
+    let node = media;
+    for (let step = 0; step < 7 && node; step++) {
+      if (node.getAttribute) {
+        const own = node.getAttribute("data-audio-id") || node.getAttribute("data-id");
+        if (own && /^\d+$/.test(own.trim())) {
+          return Number(own.trim());
+        }
+      }
+      const link = node.querySelector
+        && node.querySelector("a[href*='audio-'], a[href*='/audio']");
+      const href = link ? String(link.getAttribute("href") || "") : "";
+      const match = href.match(/audio-?\d*_(\d+)/) || href.match(/[?&]id=(\d+)/);
+      if (match) {
+        return Number(match[1]);
+      }
+      node = node.parentElement;
+    }
+    return 0;
+  }
+
+  function trackByRowId(media) {
+    const id = trackIdFromRow(media);
+    if (!id) {
+      return null;
+    }
+    for (const meta of apiMeta.values()) {
+      if (meta.id && String(meta.id) === String(id)) {
+        return meta;
+      }
+    }
+    return null;
+  }
+
   // Ответы VK бывают вложенными (execute.multiple), поэтому обходим дерево.
 // asCurrent - «это ответ про один конкретный трек», а не список плейлиста.
   function absorbApiJson(node, depth, asCurrent) {
@@ -759,6 +803,14 @@ function currentTrack(media) {
     // что играет сейчас, не врёт, поэтому он и главнее.
     if (media) {
       const src = media.currentSrc || media.src || "";
+      // Ссылка на строку плейлиста - самое точное, что есть: она указывает
+      // на конкретный трек, а не на похожий по времени.
+      const byRow = trackByRowId(media);
+      if (byRow) {
+        apiState.current = null;
+        apiState.matchedBy = "ссылка на трек";
+        return fromMeta(byRow);
+      }
       // Порядок - от самого верного к наименее верному. Обложка идёт перед
       // длительностью: у разных песен длительность совпадает иногда, а
       // обложка у каждой своя.
@@ -928,6 +980,36 @@ function panelTitleLooksLikeTrack(text) {
     return { title: title, artist: artist, fromApi: false, fromPanel: false };
   }
 
+  // Разбор панели плеера: что в ней есть на самом деле.
+//
+// Селекторы VK приходится угадывать, и каждая догадка стоит пользователю
+// круг. Здесь видно, что панель содержит на самом деле: имена узлов, их
+// текст и адреса. По этому списку следующий шаг делается без угадывания.
+function panelDump() {
+    const panel = playerPanel();
+    if (!panel) {
+      return "";
+    }
+    const parts = [];
+    for (const el of panel.querySelectorAll("*")) {
+      if (parts.length >= 14) {
+        break;
+      }
+      const cls = typeof el.className === "string"
+        ? el.className.trim().split(/\s+/).slice(0, 2).join(".")
+        : "";
+      const name = el.tagName.toLowerCase() + (cls ? "." + cls : "");
+      const text = shortText(el, 40);
+      const href = el.getAttribute && el.getAttribute("href");
+      parts.push(name
+        + (text ? " «" + text + "»" : "")
+        + (href ? " href=" + href : "")
+        + (el.getAttribute && el.getAttribute("data-id")
+          ? " data-id=" + el.getAttribute("data-id") : ""));
+    }
+    return parts.join(" | ");
+  }
+
   function readCoverUrl(fromApi, media) {
     // Обложка из API точнее: в разметке страницы легко схватить картинку
     // альбома плейлиста вместо обложки играющего трека. Но если название
@@ -946,10 +1028,19 @@ function panelTitleLooksLikeTrack(text) {
     // трека (artist, id, owner_id, title, duration, url, track_code...) НИ
     // ОДНОГО с картинкой. А на экране она есть: панель плеера показывает
     // обложку играющего трека, и это единственное место, где она есть.
-    // Раньше отсюда брали только подпись для сверки, а картинку брать не
-    // догадались - отсюда 2466 неудачных загрузок.
-    const panelUrl = absoluteUrl(panelCoverUrl());
+    //
+    // Но брать её можно не всегда. Обложка из панели принадлежит тому, что
+    // играет СЕЙЧАС, а название мы в этот раз угадали по времени. Получится
+    // обложка одной песни с названием другой - ровно то, на что указал
+    // пользователь. Поэтому при угадывании по времени обложку из панели не
+    // берём: пусть лучше её не будет, чем будет не та.
+    const RELIABLE_MATCH = [
+      "ссылка на трек", "id", "обложка", "ответ VK", "длительность и название",
+    ];
+    const known = RELIABLE_MATCH.indexOf(apiState.matchedBy) >= 0;
+    const panelUrl = known ? absoluteUrl(panelCoverUrl()) : "";
     if (panelUrl) {
+      apiState.coverSource = "панель плеера";
       return panelUrl;
     }
 
@@ -1586,6 +1677,15 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         matchedBy: apiState.matchedBy || "",
         // Какое название панели мы отвергли как название плейлиста.
         panelTitle: apiState.panelTitleRejected || "",
+        // Ссылка на строку плейлиста даёт точный номер трека.
+        rowId: trackIdFromRow(media),
+        // Звук лежит в странице или существует сам по себе.
+        mediaConnected: !!(media && media.isConnected),
+        // Откуда взята обложка: важно, чтобы она была от того же трека,
+        // что и название.
+        coverSource: apiState.coverSource || "",
+        // Что в панели плеера на самом деле.
+        panel: panelDump(),
         // Какие поля приходят в треках: по ним ищем обложку.
         fields: (apiState.fields || []).slice(0, 40),
       },

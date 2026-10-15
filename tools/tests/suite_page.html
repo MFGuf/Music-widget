@@ -1283,9 +1283,11 @@ assert("page: название плейлиста не выдаётся за н�
 assertEqual("page: вместо плейлиста показан настоящий трек",
   playlistMixed.title, "Настоящая песня");
 
-// В ответе VK обложки нет вовсе - значит берём её из панели плеера.
-assertEqual("page: обложка берётся из панели, раз в ответе её нет",
-  playlistMixed.coverUrl, "https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100.jpg");
+// В ответе VK обложки нет вовсе. Но трек здесь угадан по времени, а не
+// опознан точно, - обложку из панели тогда брать нельзя: она от другой
+// песни. Проверяется ниже, на опознании по ссылке из строки.
+assertEqual("page: угаданному по времени треку чужая обложка не подставляется",
+  playlistMixed.coverUrl, "");
 
 // Теперь случай настоящий: опознать нечем - длительность плеера не
 // совпадает ни с одной в кэше. Панель по-прежнему называет плейлист,
@@ -1303,6 +1305,101 @@ assert("page: когда ничего не опознали, диагности�
   JSON.stringify(playlistOnly.diag));
 
 Object.defineProperty(panelSound, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
+
+// --- Обложка крупнее: размер зашит в адрес -------------------------------
+//
+// Панель просит маленькую картинку для иконки, а мы показываем обложку
+// во всю карточку: отсюда мыло. Размер меняется прямо в адресе, картинка
+// та же.
+window.__fetchBodies = [];
+assert("page: разбор обложек доступен проверкам",
+  !!window.__musicWidgetCover, "нет window.__musicWidgetCover");
+
+// --- Обложка и название от одной песни ------------------------------------
+//
+// Пользователь получил обложку одной песни с названием другой. Причина:
+// обложка бралась из панели, то есть из того что играет сейчас, а название
+// в этот раз угадывалось по времени. Угадывание - повод обложку не брать.
+document.body.innerHTML =
+  '<h1>Моя музыка</h1>' +
+  '<div class="player">' +
+  '  <div class="player__art" style="background-image:' +
+  'url(https://sun1-96.userapi.com/c1_2/ZzYyXxWw/w100.jpg)"></div>' +
+  '  <button class="play">Play</button>' +
+  '  <span class="track">Какой-то плейлист</span>' +
+  '</div>';
+document.querySelector(".player").getBoundingClientRect = function () {
+  return { width: 300, height: 60 };
+};
+var guessSound = document.createElement("audio");
+guessSound.src = "https://vk.com/track.mp3";
+// Длительность, которой нет в кэше: трек угадать нечем.
+Object.defineProperty(guessSound, "duration", { value: 555.5, configurable: true });
+Object.defineProperty(guessSound, "paused", { value: false, configurable: true });
+Object.defineProperty(guessSound, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(guessSound);
+await new Promise(function (r) { setTimeout(r, 20); });
+var guessed = await ask("getState", null);
+assertEqual("page: угаданному треку не подставляется чужая обложка",
+  guessed.coverUrl, "");
+
+Object.defineProperty(guessSound, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
+
+// --- Ссылка на строку плейлиста: точное опознание --------------------------
+//
+// Плеер держит ссылку на играющий трек в строке плейлиста: /audio-2000_901.
+// Это единственный способ узнать трек точно: сравнения по времени ошибаются,
+// когда рядом лежат похожие песни.
+window.__musicWidgetApiState.meta.clear();
+window.__musicWidgetApiState.current = null;
+window.__musicWidgetApiState.resolved = null;
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      // Две песни с одинаковой длительностью - их неразличить по времени.
+      { id: 901, artist: "Альбом", title: "Первая", duration: 340,
+        url: "https://vk.com/audio-2000_901" },
+      { id: 902, artist: "Альбом", title: "Вторая", duration: 340,
+        url: "https://vk.com/audio-3000_902" },
+    ],
+  },
+});
+document.body.innerHTML =
+  '<h1>Моя музыка</h1>' +
+  '<div class="player">' +
+  '  <div class="player__art" style="background-image:' +
+  'url(https://sun1-96.userapi.com/c1_2/SecondArt/w100.jpg)"></div>' +
+  '  <button class="play">Play</button>' +
+  '</div>' +
+  // Строка плейлиста с играющим треком: звук лежит прямо в ней.
+  '<div class="track-row">' +
+  '  <audio data-audio-id="902"></audio>' +
+  '  <a href="/audio-3000_902">Вторая</a>' +
+  '</div>';
+document.querySelector(".player").getBoundingClientRect = function () {
+  return { width: 300, height: 60 };
+};
+var rowSound = document.querySelector(".track-row audio");
+Object.defineProperty(rowSound, "duration", { value: 340, configurable: true });
+Object.defineProperty(rowSound, "paused", { value: false, configurable: true });
+Object.defineProperty(rowSound, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(rowSound);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+var byRow = await ask("getState", null);
+assertEqual("page: по ссылке на строку опознаётся точный трек",
+  byRow.title, "Вторая");
+assert("page: в диагностике видно, что трек взят по ссылке из строки",
+  !!(byRow.diag && byRow.diag.rowId === 902
+     && byRow.diag.mediaConnected
+     && byRow.diag.matchedBy === "ссылка на трек"),
+  JSON.stringify(byRow.diag));
+assertEqual("page: с точно опознанным треком обложка из панели уместна",
+  byRow.coverUrl, "https://sun1-96.userapi.com/c1_2/SecondArt/w100.jpg");
+
+Object.defineProperty(rowSound, "ended", { value: true, configurable: true });
 document.body.innerHTML = "";
 
 // --- Подпись не на кнопке ------------------------------------------------------

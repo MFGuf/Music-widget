@@ -787,10 +787,32 @@ class MusicWidget:
             ("Ответов VK API", self._api_summary(current)),
             ("Кнопки", self._command_text()),
             ("Обложки", self._art_text()),
+            ("Панель", self._panel_text(current)),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
             ("Журнал", str(journal.path())),
         ]
+
+    def _panel_text(self, item) -> str:
+        """Панель плеера: что в ней есть и откуда взята обложка.
+
+        Обложка и название должны принадлежать одной песне. Если название мы
+        угадали по времени, а обложку взяли из панели, получится пара из
+        разных песен - поэтому видно, что и откуда взято.
+        """
+        diag = (item or {}).get("diag") or {}
+        parts = []
+        if diag.get("rowId"):
+            parts.append("трек в строке %s" % diag["rowId"])
+        parts.append("звук в странице" if diag.get("mediaConnected")
+                     else "звук вне страницы")
+        if diag.get("coverSource"):
+            parts.append("обложка из " + str(diag["coverSource"]))
+        if diag.get("panelTitle"):
+            parts.append("отвергли «%s»" % diag["panelTitle"])
+        if diag.get("panel"):
+            parts.append(str(diag["panel"])[:400])
+        return ", ".join(parts)
 
     def _art_text(self) -> str:
         """Что происходит с обложками.

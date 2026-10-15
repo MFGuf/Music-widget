@@ -90,6 +90,24 @@ def check_manifest():
     return manifest
 
 
+def check_art_asks_bigger():
+    """Обложка должна грузиться крупнее, чем просит панель.
+
+    Панель просит маленький размер для иконки, а виджет показывает обложку
+    во всю карточку: без увеличения мы показываем мыло.
+    """
+    art = EXT / "background" / "art.js"
+    if not art.exists():
+        return
+    text = art.read_text(encoding="utf-8")
+    if "biggerCoverUrl" in text and "ART_WANT_SIDE" in text:
+        return
+    problems.append(
+        "art.js не увеличивает размер обложки: панель просит иконку, "
+        "виджет показывает обложку во всю карточку - будет мыло"
+    )
+
+
 def check_art_uses_seen_fields():
     """Обложка ищется по полям, которые действительно приходят.
 
@@ -243,6 +261,7 @@ def main():
     if manifest:
         check_host_name(manifest)
     check_art_uses_seen_fields()
+    check_art_asks_bigger()
     check_js_pitfalls()
     check_no_stale_files()
 

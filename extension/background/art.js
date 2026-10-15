@@ -11,7 +11,12 @@
 // съела бы почти весь лимит сообщения.
 
 // По VK картинки бывают и 1000x1000, а виджет рисует их в квадрат 120px.
+// Картинка не крупнее этого по стороне: этого хватает и виджету, и
+// сообщениям о переключении.
 const ART_MAX_SIDE = 320;
+// Размер, который просим у VK. Плеер просит маленькую картинку для панели,
+// мы же показываем обложку крупно: отсюда было мыло.
+const ART_WANT_SIDE = 600;
 const ART_JPEG_QUALITY = 0.85;
 
 // Больше 8 МБ - это точно не обложка, а посторонний ответ.
@@ -59,10 +64,28 @@ function putArtCache(ck, data) {
   }
 }
 
+// Просим у VK картинку крупнее.
+//
+// Размер зашит в адрес: .../AbCdEfGh/w100.jpg - это та же самая картинка
+// шириной 100 пикселей. Панель плеера просит именно столько, сколько нужно
+// маленькой иконке, а мы показываем обложку во всю карточку и растягиваем
+// её вчетверо. Меняем размер в адресе на побольше - VK отдаст ту же
+// картинку, но настоящую.
+//
+// Адрес без размера менять нечем: он один на все размеры.
+function biggerCoverUrl(url) {
+  const text = String(url || "");
+  const sized = text.match(/\/w(\d+)(\.(?:jpe?g|png|webp))?$/i);
+  if (!sized) {
+    return text;
+  }
+  return text.slice(0, sized.index) + "/w" + ART_WANT_SIDE + (sized[2] || ".jpg");
+}
+
 function artUrlFor(item) {
   const source = store.sources.get(item.tabId);
   const url = source && source.state ? source.state.coverUrl : "";
-  return typeof url === "string" ? url : "";
+  return typeof url === "string" ? biggerCoverUrl(url) : "";
 }
 
 // Уменьшает картинку и возвращает base64 без служебного префикса.
