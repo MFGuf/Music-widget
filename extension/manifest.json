@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "Music Widget Bridge",
   "short_name": "Music Widget",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha.1",
   "description": "Передаёт состояние плеера VK Музыки в настольный виджет и принимает от него команды управления.",
   "author": "Music Widget",
 
