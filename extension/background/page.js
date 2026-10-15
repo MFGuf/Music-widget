@@ -56,6 +56,8 @@ function sendState() {
     selected: store.selectedKey,
     note: note(),
     command: store.lastCommand,
+    // Сведения об обложках: получилось ли, откуда качали и почему нет.
+    art: { error: artError(), url: artLastUrl(), stats: artStats() },
   });
 }
 

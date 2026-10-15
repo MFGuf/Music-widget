@@ -28,9 +28,25 @@ const artCache = new Map();
 // мгновенно и обложка в снимок не попадёт.
 const artPending = new Map();
 
-// Последняя ошибка загрузки: показывается в диагностике виджета. Без неё
-// сбой выглядит как «обложка просто не появилась», и гадать нечем.
+// Последняя ошибка загрузки и адрес, по которому пробовали. Без них сбой
+// выглядит как "обложка просто не появилась", и гадать нечем: неизвестно ни
+// что именно сломалось, ни откуда качали.
 let artLastError = "";
+let artLastTried = "";
+let artOk = 0;
+let artFail = 0;
+
+function artError() {
+  return artLastError;
+}
+
+function artLastUrl() {
+  return artLastTried;
+}
+
+function artStats() {
+  return { ok: artOk, fail: artFail };
+}
 
 function putArtCache(ck, data) {
   artCache.set(ck, data);
@@ -115,19 +131,28 @@ async function fillArt(item) {
 
   const url = artUrlFor(item);
   if (!url) {
+    artFail++;
+    artLastError = "обложка не найдена в ответе VK";
     return;
   }
+  artLastTried = url;
 
   const task = downloadArt(url)
     .then((data) => {
       if (data) {
         putArtCache(item.ck, data);
+        artOk++;
+        artLastError = "";
+      } else {
+        artFail++;
       }
       return data || "";
     })
     .catch((e) => {
       // Обложка - необязательная часть: сбой молча оставляем, плеер
-      // продолжает работать, а виджет покажет заглушку.
+      // продолжает работать, а виджет покажет заглушку. Причину же
+      // отдаём в диагностику, иначе чинить пришлось бы наугад.
+      artFail++;
       artLastError = String((e && e.message) || e);
       log("обложка не загрузилась:", artLastError);
       return "";

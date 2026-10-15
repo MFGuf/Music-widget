@@ -451,6 +451,28 @@ def run_checks(w: MusicWidget) -> None:
     ok("удачная команда помечена как сработавшая",
        "сработала" in line and "НЕ" not in line, line)
 
+    # --- 18. Сведения об обложках в диагностике ------------------------------
+    # Пустое место обложки означает и "не нашлась в ответе VK", и "загрузка
+    # сорвалась". Лечится по-разному, поэтому виджет обязан различать.
+    w.last_art = None
+    ok("без сведений сказано, что обложки просто не грузились",
+       "неудач 0" in dict(w._status_lines())["Обложки"])
+
+    w.states.put({"items": [dict(TRACK)], "selected": "tab:7", "note": "Подключено",
+                  "art": {"error": "", "url": "https://sun1-96.userapi.com/a/w100.jpg",
+                          "stats": {"ok": 2, "fail": 0}}})
+    w._drain_states()
+    line = dict(w._status_lines())["Обложки"]
+    ok("удачная загрузка обложки отражена в диагностике", "загружено 2" in line, line)
+
+    w.states.put({"items": [dict(TRACK)], "selected": "tab:7", "note": "Подключено",
+                  "art": {"error": "HTTP 403", "url": "https://sun1-96.userapi.com/b.jpg",
+                          "stats": {"ok": 0, "fail": 3}}})
+    w._drain_states()
+    line = dict(w._status_lines())["Обложки"]
+    ok("причина сбоя загрузки обложки видна в диагностике", "HTTP 403" in line, line)
+    ok("в диагностике видно, откуда качали", "sun1-96" in line, line)
+
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="mw-widget-"))

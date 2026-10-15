@@ -114,6 +114,8 @@ class MusicWidget:
         self.last_state_at = 0.0
         # Что расширение ответило на последнюю кнопку виджета.
         self.last_command: dict | None = None
+        # Что происходит с обложками: получилось ли, откуда качали, почему нет.
+        self.last_art: dict | None = None
 
         # Подключился ли хост и с какого момента. Без второго поля отличить
         # «расширение ещё не успело прислать первый снимок» от «расширение
@@ -317,6 +319,9 @@ class MusicWidget:
             command = state.get("command")
             if command:
                 self.last_command = command
+            art = state.get("art")
+            if art:
+                self.last_art = art
             self.last_state_at = time.monotonic()
             # Новый снимок отменяет недовыполненную перемотку: браузер уже
             # отчитался о реальном положении дел, доверять ему надо.
@@ -781,10 +786,32 @@ class MusicWidget:
             ("Название из", self._title_source(current)),
             ("Ответов VK API", self._api_summary(current)),
             ("Кнопки", self._command_text()),
+            ("Обложки", self._art_text()),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
             ("Журнал", str(journal.path())),
         ]
+
+    def _art_text(self) -> str:
+        """Что происходит с обложками.
+
+        Пустая строка на месте обложки выглядит одинаково и когда обложки
+        нет в ответе VK, и когда загрузка сорвалась. Разница важна: лечится
+        она по-разному.
+        """
+        art = self.last_art or {}
+        stats = art.get("stats") or {}
+        parts = ["загружено %d, неудач %d"
+                 % (int(stats.get("ok") or 0), int(stats.get("fail") or 0))]
+        error = art.get("error") or ""
+        if error:
+            parts.append("ошибка: " + error)
+        url = art.get("url") or ""
+        if url:
+            parts.append("качали с " + url[:60])
+        elif not error:
+            parts.append("адрес обложки не найден в ответе VK")
+        return ", ".join(parts)
 
     def _command_text(self) -> str:
         """Ответ расширения на последнее нажатие кнопки виджета.
