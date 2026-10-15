@@ -986,6 +986,59 @@ mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover:
 st = await ask("getState", null);
 assertEqual("page: длительность из API пережила повторную вставку", st.dur, 245);
 
+// --- Разметка как у VK --------------------------------------------------------
+//
+// В локализации VK есть audio_set_next_audio, но ключа для предыдущего трека
+// нет вовсе: кнопки переключения - иконки без подписей, и на <div>, где
+// метода click() не существует. Надёжна в разметке только подпись кнопки
+// паузы, поэтому ищем переключение от неё.
+document.body.innerHTML = [
+  '<div class="player">',
+  '  <div class="player__track">',
+  '    <a class="player__name" href="/track1" title="Песня в плейлисте">Песня в плейлисте</a>',
+  '    <a class="player__artist" href="/artist1" title="Исполнитель в плейлисте">Исполнитель</a>',
+  '  </div>',
+  '  <div class="player__controls">',
+  '    <div class="Icon Icon--prev" id="vk-prev" style="width:40px;height:40px"></div>',
+  '    <button class="Icon" id="vk-play" aria-label="Воспроизвести"',
+  '      style="width:40px;height:40px"></button>',
+  '    <div class="Icon Icon--next" id="vk-next" style="width:40px;height:40px"></div>',
+  '    <div class="Icon Icon--shuffle" style="width:40px;height:40px"></div>',
+  '  </div>',
+  '</div>',
+].join("\n");
+window.__clicks = [];
+document.getElementById("vk-prev").addEventListener("click", function () {
+  window.__clicks.push("prev");
+});
+document.getElementById("vk-next").addEventListener("click", function () {
+  window.__clicks.push("next");
+});
+document.getElementById("vk-play").addEventListener("click", function () {
+  window.__clicks.push("play");
+});
+
+res = await ask("cmd", { action: "next" });
+assert("page: «следующий» в разметке VK нажимается",
+  !!res && res.ok === true, JSON.stringify(res));
+assert("page: нажата кнопка «следующий»", window.__clicks.join(",") === "next",
+  window.__clicks.join(",") + " ответ: " + JSON.stringify(res));
+
+window.__clicks = [];
+res = await ask("cmd", { action: "prev" });
+assert("page: «предыдущий» в разметке VK нажимается",
+  !!res && res.ok === true, JSON.stringify(res));
+assert("page: нажата кнопка «предыдущий»", window.__clicks.join(",") === "prev",
+  window.__clicks.join(",") + " ответ: " + JSON.stringify(res));
+
+window.__clicks = [];
+res = await ask("cmd", { action: "toggle" });
+assert("page: пауза в разметке VK нажимается ровно один раз",
+  !!res && res.ok === true && window.__clicks.length === 1,
+  window.__clicks.join(",") + " ответ: " + JSON.stringify(res));
+
+document.body.innerHTML = "";
+
 // --- Подпись не на кнопке ------------------------------------------------------
 //
 // Селектор кнопок широкий: подпись с aria-label лежит часто на иконке или

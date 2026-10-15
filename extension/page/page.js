@@ -1443,40 +1443,59 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
   // в панели плеера кнопки стоят слева направо «предыдущий, пауза,
   // следующий», и это единственный ориентир, который не зависит от слов.
   function transportButtons() {
-    const panel = playerPanel();
-    if (!panel) {
+    // Опора - кнопка паузы: её VK подписывает всегда ("Воспроизвести" или
+    // "Приостановить"), и найти её надёжно. Кнопки переключения подписей не
+    // имеют вовсе, но стоят с ней в одной строке: левее - предыдущая,
+    // правее - следующая.
+    const play = clickTarget(findToggleButton());
+    if (!play) {
       return null;
     }
-    const found = [];
-    for (const el of panel.querySelectorAll(BUTTON_SELECTOR)) {
-      if (!isVisible(el)) {
-        continue;
+
+    let row = play.parentElement;
+    let items = [];
+    for (let step = 0; step < 4 && row; step++) {
+      const found = [];
+      for (const el of row.querySelectorAll(BUTTON_SELECTOR)) {
+        if (!isVisible(el)) {
+          continue;
+        }
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) {
+          continue;
+        }
+        // Нажимаемым быть необязательно: иконки VK - это <div> без метода
+        // click, и нажатие на них идёт через отправку события (press).
+        found.push({ el: el, x: rect.left + rect.width / 2 });
       }
+      if (found.length >= 3) {
+        items = found;
+        break;
+      }
+      row = row.parentElement;
+    }
+    if (items.length < 3) {
+      return null;
+    }
+
+    items.sort((a, b) => a.x - b.x);
+    const center = (el) => {
       const rect = el.getBoundingClientRect();
-      if (rect.width < 12 || rect.height < 12) {
-        continue;
-      }
-      found.push({ el: el, x: rect.left, y: rect.top });
-    }
-    if (found.length < 3) {
-      return null;
-    }
-    // Строки в панели несколько (обложка, трек, кнопки). Берём нижнюю -
-    // там живёт транспорт.
-    const maxY = Math.max.apply(null, found.map((item) => item.y));
-    const row = found
-      .filter((item) => item.y > maxY - 24)
-      .sort((a, b) => a.x - b.x);
-    if (row.length < 3) {
-      return null;
-    }
-    const play = row.find((item) => RE_TOGGLE.test(buttonMeta(item.el)))
-      || row[Math.floor(row.length / 2)];
-    return {
-      prev: row[0] !== play ? row[0] : row[row.length - 1],
-      toggle: play,
-      next: row[row.length - 1] !== play ? row[row.length - 1] : row[0],
+      return rect.left + rect.width / 2;
     };
+    const playX = center(play);
+
+    // Кнопки слева от паузы - предыдущие, справа - следующие.
+    const left = items.filter((item) => center(item.el) < playX);
+    const right = items.filter((item) => center(item.el) > playX);
+    if (!left.length || !right.length) {
+      return null;
+    }
+    // Ближайшие к паузе: остальные в той же строке к переключению отношения
+    // не имеют.
+    left.sort((a, b) => center(b.el) - center(a.el));
+    right.sort((a, b) => center(a.el) - center(b.el));
+    return { prev: left[0].el, toggle: play, next: right[0].el };
   }
 
   function findTransport(kind) {
@@ -1552,7 +1571,7 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
     const found = findTransport("toggle");
     const button = found ? clickTarget(found) : null;
     if (button) {
-      button.click();
+      press(button);
       return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
     }
     // Кнопки могут быть не найдены (плеер свёрнут, вёрстка изменилась) - тогда
@@ -1585,7 +1604,7 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
     const button = found ? clickTarget(found) : null;
     if (button && (!media || !media.paused)) {
       // Плеер ещё играет - нажимаем кнопку, чтобы он встал.
-      button.click();
+      press(button);
       return { ok: true, msg: "кнопка: " + buttonMeta(button).slice(0, 60) };
     }
     const seen = visibleButtons(8);
@@ -1640,6 +1659,34 @@ function visibleButtons(limit) {
     return null;
   }
 
+  // Нажать элемент так, чтобы сработало.
+  //
+  // У VK кнопки переключения - иконки без подписей, и лежат они на <div>
+  // и <span>, у которых метода click() нет: попытка нажать их падала с
+  // "button.click is not a function". Событие же можно отправить любому
+  // элементу, и обработчик, навешенный на него, сработает как при настоящем
+  // клике мышью.
+  function press(el) {
+    const target = clickTarget(el);
+    if (target) {
+      target.click();
+      return true;
+    }
+    if (el && typeof el.dispatchEvent === "function") {
+      try {
+        for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+          el.dispatchEvent(new MouseEvent(type, {
+            bubbles: true, cancelable: true, view: window,
+          }));
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    return false;
+  }
+
   function commandSkip(kind, what) {
     const found = findTransport(kind);
     const target = found ? clickTarget(found) : null;
@@ -1651,7 +1698,7 @@ function visibleButtons(limit) {
           + (seen.length ? seen.join(" / ") : "нет"),
       };
     }
-    target.click();
+    press(target);
     return { ok: true, msg: "кнопка: " + buttonMeta(target).slice(0, 60) };
   }
 
