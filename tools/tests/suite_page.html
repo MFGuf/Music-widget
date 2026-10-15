@@ -986,7 +986,58 @@ mockPlayer({ title: "Кино", artist: "Дельфин", media: false, noCover:
 st = await ask("getState", null);
 assertEqual("page: длительность из API пережила повторную вставку", st.dur, 245);
 
-// --- Разметка как у VK --------------------------------------------------------
+// --- Совпадающие длительности, разводит название ----------------------------
+//
+// Обложка недоступна (например, её ещё нет в ответе API), остаётся одна
+// длительность на двоих. Раньше брался просто самый свежий трек - то есть
+// последний в списке, и виджет показывал чужую песню. Теперь выбор сужается
+// названием, которое сейчас показано в панели плеера.
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { id: 301, title: "Тихое утро", artist: "Первый", duration: 210 },
+      { id: 302, title: "Громкая ночь", artist: "Второй", duration: 210 },
+      { id: 303, title: "Ещё одна", artist: "Третий", duration: 210 },
+    ],
+  },
+});
+window.__musicWidgetApiState.current = null;
+document.body.innerHTML = [
+  '<h1>Моя музыка</h1>',
+  '<div class="player-bar" style="width:600px">',
+  '  <div class="track-name">',
+  '    <div class="track-name__title">Громкая ночь</div>',
+  '    <div class="track-name__artist">Второй</div>',
+  '  </div>',
+  '  <button class="Icon" aria-label="Пауза" style="width:40px;height:40px"></button>',
+  '</div>',
+].join("\n");
+
+var sameLen = document.createElement("audio");
+sameLen.src = "https://vk.com/track.mp3";
+Object.defineProperty(sameLen, "duration", { value: 210, configurable: true });
+Object.defineProperty(sameLen, "paused", { value: false, configurable: true });
+Object.defineProperty(sameLen, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(sameLen);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+var byName = await ask("getState", null);
+assertEqual("page: одинаковая длительность - решает название", byName.title,
+  "Громкая ночь");
+assertEqual("page: исполнитель выбранного трека", byName.artist, "Второй");
+assert("page: в диагностике видно, что сверились и с названием",
+  byName.diag && byName.diag.matchedBy === "длительность и название",
+  JSON.stringify(byName.diag));
+
+// Название может приходить с хвостом " - Исполнитель": сверка должна
+// выдерживать такой вид.
+document.querySelector(".track-name__title").textContent = "Громкая ночь - Второй";
+var withTail = await ask("getState", null);
+assertEqual("page: название с хвостом '- Исполнитель' узнаётся",
+  withTail.title, "Громкая ночь");
+
+Object.defineProperty(sameLen, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
 //
 // В локализации VK есть audio_set_next_audio, но ключа для предыдущего трека
 // нет вовсе: кнопки переключения - иконки без подписей, и на <div>, где

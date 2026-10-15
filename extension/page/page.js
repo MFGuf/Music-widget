@@ -227,29 +227,52 @@ const apiMeta = apiState.meta;
     });
   }
 
-  // Поиск играющего трека среди уже загруженных.
+  // Приводим название к сравнимому виду: разные пробелы, регистр и
+  // хвост вида " - Исполнитель" не должны мешать узнать один и тот же трек.
+  function normTitle(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/\s*[-–—]\s*[^-–—]+$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function sameTrack(meta, wanted) {
+    const a = normTitle(meta.title);
+    const b = normTitle(wanted);
+    if (!a || !b) {
+      return false;
+    }
+    return a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0;
+  }
+
+  // По длительности. Длительность у трека одна на страницу, но у разных
+  // песен она иногда совпадает - ремиксы, записи концерта. В плейлисте на
+  // сто песен совпадений достаточно, чтобы выбрать чужую песню.
   //
-  // На странице плейлиста VK не присылает отдельный запрос на включённый
-  // трек: он берёт его из уже загруженного списка. Поэтому "текущим" по
-  // запросу становится никто, и виджет показывает заголовок раздела.
-  // Зато у играющего звука есть точная длительность - её мы и сверяем с
-  // кэшем. Длительность трека уникальна практически всегда.
-  function trackByDuration(dur) {
+  // Поэтому сначала пробуем сузить выборку названием, которое сейчас
+  // показано в панели плеера: из всех треков с такой длительностью берём
+  // тот, чьё название туда похоже.
+  function trackByDuration(dur, wanted) {
     if (!dur || !isFinite(dur) || dur <= 0) {
       return null;
     }
-    let best = null;
+    let byName = null;
+    let any = null;
     for (const meta of apiMeta.values()) {
       // Полсекунды - щедрый запас: длительности приходят целыми, но
       // округление в разных местах иногда отличается на доли секунды.
       if (Math.abs(meta.dur - dur) > 0.75) {
         continue;
       }
-      if (!best || meta.at > best.at) {
-        best = meta;
+      if (!any || meta.at > any.at) {
+        any = meta;
+      }
+      if (!byName && sameTrack(meta, wanted)) {
+        byName = meta;
       }
     }
-    return best;
+    return byName || any;
   }
 
   // По обложке. Надёжнее длительности: у разных песен длительность иногда
@@ -592,6 +615,18 @@ function looksLikeApi(url) {
     return raw;
   }
 
+  // Что сейчас показано в панели плеера: название играющего трека из
+  // разметки. Само по себе оно ненадёжно - на странице плейлиста это может
+  // оказаться заголовок раздела, - но как признак для разведения
+  // совпадающих длительностей годится.
+  function panelTrackTitle() {
+    const panel = titleFromPlayerPanel();
+    if (panel) {
+      return panel;
+    }
+    return pickText(TITLE_SELECTORS);
+  }
+
   // Снимок записи кэша в том же виде, что и current.
   function fromMeta(meta) {
     return {
@@ -635,9 +670,14 @@ function looksLikeApi(url) {
       }
       const dur = Number(media.duration);
       if (isFinite(dur) && dur > 0) {
-        const byDur = trackByDuration(dur);
+        // Название берём из панели плеера: оно, хоть и из разметки, зато
+        // принадлежит играющему треку, и им мы разводим совпадающие
+        // длительности.
+        const byDur = trackByDuration(dur, panelTrackTitle());
         if (byDur) {
-          apiState.matchedBy = "длительность";
+          apiState.matchedBy = sameTrack(byDur, panelTrackTitle())
+            ? "длительность и название"
+            : "длительность";
           return fromMeta(byDur);
         }
       }
