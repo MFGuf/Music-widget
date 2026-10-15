@@ -1181,6 +1181,59 @@ assert("page: имена полей ответа VK собраны в диагн
     && coverState.diag.fields.length > 0),
   JSON.stringify(coverState.diag));
 
+// --- VK заранее грузит СЛЕДУЮЩИЙ трек ----------------------------------
+//
+// Путались песни длиной в минуты: две менялись местами, как только VK
+// догружал следующую. Причина - одиночный ответ VK про следующий трек,
+// который висел на виджете как "текущий" и считался главнее звука.
+window.__musicWidgetApiState.meta.clear();
+window.__musicWidgetApiState.current = null;
+window.__musicWidgetApiState.resolved = null;
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    // Список плейлиста: две песни, очень разные по длине.
+    items: [
+      { id: 701, title: "Две минуты пять", artist: "Альбом", duration: 125 },
+      { id: 702, title: "Четыре минуты восемь", artist: "Альбом", duration: 248 },
+    ],
+  },
+});
+document.body.innerHTML = '<h1>Моя музыка</h1>';
+var swapSound = document.createElement("audio");
+swapSound.src = "https://vk.com/track.mp3";
+// Играет песня 2:05...
+Object.defineProperty(swapSound, "duration", { value: 125.07, configurable: true });
+Object.defineProperty(swapSound, "paused", { value: false, configurable: true });
+Object.defineProperty(swapSound, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(swapSound);
+await new Promise(function (r) { setTimeout(r, 20); });
+var swapped = await ask("getState", null);
+assertEqual("page: играет песня 2:05 - показываем её", swapped.title, "Две минуты пять");
+
+// ...а VK присылает ОДИНОЧНЫЙ ответ про следующую, 4:08.
+// Одиночный ответ лежит в корне, а не в items: массив намеренно считается
+// списком, а одиночный трек - это то, что отвечает за "текущий".
+await apiCall("https://api.vk.com/method/audio.get?act=one", {
+  response: {
+    id: 702, title: "Четыре минуты восемь", artist: "Альбом", duration: 248,
+  },
+});
+var afterPrefetch = await ask("getState", null);
+assertEqual("page: ответ VK про следующий трек не вытесняет играющий",
+  afterPrefetch.title, "Две минуты пять");
+assert("page: видно, что опознали по звуку, а не по ответу VK",
+  afterPrefetch.diag && afterPrefetch.diag.matchedBy.indexOf("длительность") === 0,
+  JSON.stringify(afterPrefetch.diag));
+
+// Настоящая смена трека: играть начинает 4:08 - виджет обязан переключиться.
+Object.defineProperty(swapSound, "duration", { value: 248.07, configurable: true });
+var realSwitch = await ask("getState", null);
+assertEqual("page: при настоящей смене трека виджет переключается",
+  realSwitch.title, "Четыре минуты восемь");
+
+Object.defineProperty(swapSound, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
+
 // --- Подпись не на кнопке ------------------------------------------------------
 //
 // Селектор кнопок широкий: подпись с aria-label лежит часто на иконке или

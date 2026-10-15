@@ -280,7 +280,7 @@ window.__musicWidgetCover = {
   // Ответы API куда надёжнее: когда начинает играть трек, VK запрашивает
   // его отдельно, и там лежат название, исполнитель, точная длительность
   // и обложка.
-  const CURRENT_TTL_MS = 10 * 60 * 1000;
+  const CURRENT_TTL_MS = 60 * 1000;
 
   function rememberTrack(artist, title, dur, coverUrl, asCurrent, id) {
     if (!title || !isFinite(dur) || dur <= 0) {
@@ -739,19 +739,18 @@ function looksLikeApi(url) {
   }
 
   function currentTrack(media) {
-    // Данные о текущем треке из API, пока не устарели. После смены трека
-    // приходит новый ответ VK, поэтому десяти минут с запасом хватает, а
-    // старый трек не будет висеть на виджете вечно.
     const now = Date.now();
     const current = apiState.current;
-    if (current && current.title && now - current.at <= CURRENT_TTL_MS) {
-      apiState.matchedBy = "ответ VK";
-      return current;
-    }
-    // Одиночного запроса могло не быть вовсе: на странице плейлиста VK
-    // играющий трек берётся из уже загруженного списка. Тогда опознаём его
-    // по самому звуку - сперва по идентификатору в адресе, затем по
-    // точной длительности.
+    const fresh = current && current.title && now - current.at <= CURRENT_TTL_MS;
+
+    // Порядок - сначала свидетельства о том, что играет СЕЙЧАС, и лишь
+    // потом ответ VK.
+    //
+    // Раньше было наоборот, и это путало песни длиной в минуты: одиночный
+    // запрос VK бывает и про СЛЕДУЮЩИЙ трек - VK готовит его заранее, -
+    // и такой ответ висел на виджете, пока отвечал за играющий. Две песни
+    // менялись местами, как только VK догружал следующую. Сам звук о том,
+    // что играет сейчас, не врёт, поэтому он и главнее.
     if (media) {
       const src = media.currentSrc || media.src || "";
       // Порядок - от самого верного к наименее верному. Обложка идёт перед
@@ -759,12 +758,14 @@ function looksLikeApi(url) {
       // обложка у каждой своя.
       const byId = trackById(src);
       if (byId) {
+        apiState.current = null;
         apiState.matchedBy = "id";
         return fromMeta(byId);
       }
       const signature = coverSignature(panelCoverUrl());
       const byCover = trackByCover(signature);
       if (byCover) {
+        apiState.current = null;
         apiState.matchedBy = "обложка";
         return fromMeta(byCover);
       }
@@ -775,14 +776,27 @@ function looksLikeApi(url) {
         // длительности.
         const byDur = trackByDuration(dur, panelTrackTitle());
         if (byDur) {
+          // Ответ VK с этим не сходится - значит он про другой трек, и
+          // держать его дальше незачем: он снова вылез бы, когда по звуку
+          // опознать не удастся.
+          if (fresh && Math.abs(current.dur - dur) > 1) {
+            apiState.current = null;
+          }
           apiState.matchedBy = sameTrack(byDur, panelTrackTitle())
             ? "длительность и название"
             : "длительность";
           return fromMeta(byDur);
         }
       }
-      apiState.matchedBy = "";
     }
+
+    // Звук опознать не вышло, но ответ VK ещё годен - он и сгодится.
+    if (fresh) {
+      apiState.matchedBy = "ответ VK";
+      return current;
+    }
+
+    apiState.matchedBy = "";
     return null;
   }
 
