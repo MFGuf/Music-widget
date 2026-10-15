@@ -84,9 +84,24 @@ def check_manifest():
     for size, icon in manifest.get("icons", {}).items():
         check((EXT / icon).exists(), "нет иконки %s (%s)" % (icon, size))
 
+    check_manifest_version(manifest)
     check_web_accessible(manifest)
     check_background_scripts(manifest)
     return manifest
+
+
+# Firefox и AMO принимают в версии только числа через точки: не больше
+# четырёх чисел, каждое до девяти цифр и без ведущих нулей. Строка вида
+# "0.2.0-alpha.1" проходит как версия расширения (только с предупреждением
+# при загрузке), но на подпись не пройдёт вовсе.
+VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){0,3}$")
+
+
+def check_manifest_version(manifest):
+    version = str(manifest.get("version") or "")
+    check(bool(VERSION_PATTERN.match(version)),
+          "версия %r не подходит: Firefox и AMO ждут числа через точки, "
+          "как в 0.2.0, без букв и суффиксов вида -alpha.1" % version)
 
 
 def check_web_accessible(manifest):
