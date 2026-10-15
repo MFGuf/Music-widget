@@ -257,6 +257,25 @@ def check_no_stale_files():
 
 
 
+def check_art_measures_size():
+    """Размер принятой картинки должен измеряться, а не браться из адреса.
+
+    Мы не раз показали мыло, решив, что VK сам отдаст нужный размер. Он
+    отдал 34x34, и по счётчику "загружено" это выглядело как успех.
+    """
+    art = EXT / "background" / "art.js"
+    if not art.exists():
+        return
+    text = art.read_text(encoding="utf-8")
+    if "ART_MIN_SIDE" in text and "coverVariants" in text and "bestSide" in text:
+        return
+    problems.append(
+        "art.js не измеряет принятую картинку и не перебирает варианты "
+        "крупнее: VK отдаёт размер, запрошенный страницей (34x34), и мы "
+        "показываем мыло, считая это успехом"
+    )
+
+
 def check_cover_url_reported():
     """Адрес обложки должен попадать в диагностику целиком.
 
@@ -282,6 +301,7 @@ def main():
     check_art_uses_seen_fields()
     check_art_asks_bigger()
     check_cover_url_reported()
+    check_art_measures_size()
     check_js_pitfalls()
     check_no_stale_files()
 

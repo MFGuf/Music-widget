@@ -866,6 +866,15 @@ class MusicWidget:
         stats = art.get("stats") or {}
         parts = ["загружено %d, неудач %d"
                  % (int(stats.get("ok") or 0), int(stats.get("fail") or 0))]
+        # Адреса не было - это не сбой загрузки, а другое. Смешанные в
+        # одном счётчике они показывали 65 неудач, когда почти все были
+        # вовсе не сбоями.
+        if stats.get("noUrl"):
+            parts.append("адреса не было %d раз" % int(stats["noUrl"]))
+        side = int(stats.get("side") or 0)
+        if side:
+            parts.append("пришла %d px%s"
+                         % (side, " - мыло!" if side < 200 else ""))
         error = art.get("error") or ""
         if error:
             parts.append("ошибка: " + error)

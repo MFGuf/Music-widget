@@ -14,8 +14,11 @@
 // Картинка не крупнее этого по стороне: этого хватает и виджету, и
 // сообщениям о переключении.
 const ART_MAX_SIDE = 320;
-// Размер, который просим у VK. Плеер просит маленькую картинку для панели,
-// мы же показываем обложку крупно: отсюда было мыло.
+// Ниже этой стороны картинку видно как мыло: её показывают во всю
+// карточку, и на экране получаются крупные размытые квадраты.
+const ART_MIN_SIDE = 200;
+// Размер, который просим у VK. Плеер просит иконку для себя, мы же
+// показываем обложку во всю карточку: отсюда было мыло.
 const ART_WANT_SIDE = 600;
 const ART_JPEG_QUALITY = 0.85;
 
@@ -40,6 +43,12 @@ let artLastError = "";
 let artLastTried = "";
 let artOk = 0;
 let artFail = 0;
+// Сколько раз обложки просто не было откуда взять. Отдельно от сбоев
+// загрузки: счётчик один на обе причины показывал 65 неудач, из которых
+// почти все были вовсе не сбоями.
+let artNoUrl = 0;
+// Сторона последней принятой картинки: видно, мыло это или обложка.
+let artLastSide = 0;
 
 function artError() {
   return artLastError;
@@ -50,7 +59,7 @@ function artLastUrl() {
 }
 
 function artStats() {
-  return { ok: artOk, fail: artFail };
+  return { ok: artOk, fail: artFail, noUrl: artNoUrl, side: artLastSide };
 }
 
 function putArtCache(ck, data) {
@@ -97,7 +106,10 @@ function artUrlFor(item) {
 
 // Уменьшает картинку и возвращает base64 без служебного префикса.
 async function encodeArt(blob) {
-  const bitmap = await createImageBitmap(blob);
+  return encodeBitmap(await createImageBitmap(blob));
+}
+
+function encodeBitmap(bitmap) {
   const scale = Math.min(1, ART_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -122,7 +134,33 @@ async function encodeArt(blob) {
   return "";
 }
 
-async function downloadArt(url) {
+// Варианты одной и той же картинки, от крупного к исходному.
+//
+// Живой адрес от VK выглядит так:
+//   .../UtJtSsDa4FA.jpg?size=34x34&quality=95&sign=...&type=audio
+// Тридцать четыре пикселя - это размер иконки плеера. Подпись в адресе
+// считается от размера, поэтому просто подменить его нельзя: придёт
+// отказ. Но у VK есть и независящие от подписи способы попросить ту же
+// картинку целиком, и какой из них сработает - заранее неизвестно, ведь
+// VK меняет их без предупреждения. Поэтому пробуем по очереди и берём
+// ту, что реально пришла.
+//
+// Исходный адрес идёт последним: он точно работает, и если ничего
+// лучше не нашлось - будет хоть какая-то картинка.
+function coverVariants(url) {
+  const text = String(url || "");
+  const list = [];
+  const sized = text.match(/([?&])size=\d+x\d+/i);
+  if (sized) {
+    list.push(text.replace(/([?&])size=\d+x\d+/i, "$1size="
+      + ART_WANT_SIDE + "x" + ART_WANT_SIDE));
+    list.push(text.replace(/[?&]size=\d+x\d+/i, "").replace(/[?&]$/, ""));
+  }
+  list.push(text);
+  return list;
+}
+
+async function fetchBlob(url) {
   const response = await fetch(url, { credentials: "include", cache: "force-cache" });
   if (!response.ok) {
     throw new Error("HTTP " + response.status);
@@ -131,7 +169,47 @@ async function downloadArt(url) {
   if (!blob.size || blob.size > ART_MAX_BYTES) {
     throw new Error("подозрительный размер: " + blob.size);
   }
-  return encodeArt(blob);
+  return blob;
+}
+
+// Качает картинку, пробуя варианты крупнее.
+//
+// Ключевое здесь - измерять, а не рассчитывать. Раньше размер брался из
+// адреса и на слово: если VK меняет правила, мы годами показываем мыло и
+// считаем, что всё в порядке. Теперь картинка распаковывается и
+// сравнивается по стороне, и как только нашлась достаточно крупная -
+// остальное не качается.
+async function downloadArt(url) {
+  let best = null;
+  let bestSide = 0;
+  let lastError = null;
+  for (const candidate of coverVariants(url)) {
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(await fetchBlob(candidate));
+      const side = Math.max(bitmap.width, bitmap.height);
+      if (side > bestSide) {
+        if (best && typeof best.close === "function") {
+          best.close();
+        }
+        best = bitmap;
+        bestSide = side;
+        lastError = null;
+      } else if (typeof bitmap.close === "function") {
+        bitmap.close();
+      }
+    } catch (e) {
+      lastError = e;
+    }
+    if (bestSide >= ART_MIN_SIDE) {
+      break;
+    }
+  }
+  if (!best) {
+    throw lastError || new Error("не пришёл ни один вариант");
+  }
+  artLastSide = bestSide;
+  return encodeBitmap(best);
 }
 
 // Дописывает обложку в готовый список источников. Вызывается после
@@ -161,7 +239,9 @@ async function fillArt(item) {
 
   const url = artUrlFor(item);
   if (!url) {
-    artFail++;
+    // Адреса не было - это не сбой загрузки, а другое: разбираются они
+    // по-разному, и в одном счётчике обе причины сливались в одну.
+    artNoUrl++;
     artLastError = "обложка не найдена в ответе VK";
     return;
   }
