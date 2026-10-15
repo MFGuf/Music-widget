@@ -90,6 +90,25 @@ def check_manifest():
     return manifest
 
 
+def check_art_uses_seen_fields():
+    """Обложка ищется по полям, которые действительно приходят.
+
+    Мы искали картинку по семи именам и не нашли её ни разу, хотя треки
+    разбирались верно. Проверка напоминает: имена полей в ответе VK надо
+    сверять с теми, что он шлёт на самом деле, а не с предположением.
+    """
+    page = EXT / "page" / "page.js"
+    if not page.exists():
+        return
+    text = page.read_text(encoding="utf-8")
+    if "rememberFields" in text and "apiState.fields" in text:
+        return
+    problems.append(
+        "page.js не собирает имена полей из ответа VK: искать обложку "
+        "приходится по предположению, а по факту таких полей в треке нет"
+    )
+
+
 # Firefox и AMO принимают в версии только числа через точки: не больше
 # четырёх чисел, каждое до девяти цифр и без ведущих нулей. Строка вида
 # "0.2.0-alpha.1" проходит как версия расширения (только с предупреждением
@@ -223,6 +242,7 @@ def main():
     manifest = check_manifest()
     if manifest:
         check_host_name(manifest)
+    check_art_uses_seen_fields()
     check_js_pitfalls()
     check_no_stale_files()
 

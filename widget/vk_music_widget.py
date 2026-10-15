@@ -853,6 +853,8 @@ class MusicWidget:
             parts.append("опознан по: %s" % diag["matchedBy"])
         if diag.get("media"):
             parts.append("есть аудиоэлемент")
+        if diag.get("fields"):
+            parts.append("поля VK: " + ", ".join(diag["fields"][:14]))
         return ", ".join(parts)
 
     def _show_status(self) -> None:

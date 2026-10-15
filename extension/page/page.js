@@ -116,6 +116,26 @@ const apiMeta = apiState.meta;
            String(title || "").trim().toLowerCase();
   }
 
+  // Какие поля на самом деле присылает VK в треках.
+//
+// Мы ищем обложку по семи именам полей и ни одну не нашли на 211 попытках.
+// Значит имена другие - а угадывать их дальше бессмысленно. Собираем все
+// имена, что встречаются, и показываем в диагностике: по этому списку
+// видно, чем на самом деле оформлена обложка.
+const MAX_SEEN_FIELDS = 40;
+
+  function rememberFields(node) {
+    const fields = apiState.fields || (apiState.fields = []);
+    for (const key of Object.keys(node)) {
+      if (fields.indexOf(key) < 0) {
+        fields.push(key);
+      }
+    }
+    while (fields.length > MAX_SEEN_FIELDS) {
+      fields.shift();
+    }
+  }
+
   function isImageUrl(value) {
     return typeof value === "string" && /^https?:\/\//i.test(value)
       && /\.(jpe?g|png|webp)(\?|$)/i.test(value);
@@ -258,21 +278,28 @@ const apiMeta = apiState.meta;
       return null;
     }
     let byName = null;
-    let any = null;
+    let closest = null;
+    let closestGap = Infinity;
     for (const meta of apiMeta.values()) {
       // Полсекунды - щедрый запас: длительности приходят целыми, но
       // округление в разных местах иногда отличается на доли секунды.
-      if (Math.abs(meta.dur - dur) > 0.75) {
+      const gap = Math.abs(meta.dur - dur);
+      if (gap > 0.75) {
         continue;
       }
-      if (!any || meta.at > any.at) {
-        any = meta;
+      // Из совпавших берём БЛИЖАЙШИЙ по времени, а не самый свежий.
+      // Просто свежий брал последний трек в списке, а он у пользователя
+      // оказывался тем, что на секунду короче играющего, - и виджет
+      // показывал чужое название.
+      if (!closest || gap < closestGap) {
+        closest = meta;
+        closestGap = gap;
       }
       if (!byName && sameTrack(meta, wanted)) {
         byName = meta;
       }
     }
-    return byName || any;
+    return byName || closest;
   }
 
   // По обложке. Надёжнее длительности: у разных песен длительность иногда
@@ -341,6 +368,7 @@ const apiMeta = apiState.meta;
       : (typeof node.owner_name === "string" ? node.owner_name : "");
     const dur = Number(node.duration);
     if (title && isFinite(dur) && dur > 0) {
+      rememberFields(node);
       rememberTrack(artist, title, dur, pickCoverUrl(node), asCurrent,
                     node.id || node.audio_id || node.audioId || 0);
     }
@@ -1420,6 +1448,8 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         mediaDuration: where.durExact ? dur : 0,
         titleSource: text.fromApi ? "api" : "страница",
         matchedBy: apiState.matchedBy || "",
+        // Какие поля приходят в треках: по ним ищем обложку.
+        fields: (apiState.fields || []).slice(0, 40),
       },
     };
   }

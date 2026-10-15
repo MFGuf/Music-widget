@@ -1090,6 +1090,46 @@ assert("page: пауза в разметке VK нажимается ровно 
 
 document.body.innerHTML = "";
 
+// --- Соседние длительности: берём ближайшую -------------------------------
+//
+// Замечено у пользователя: названия путались с песнями, которые на одну
+// секунду короче. Причина - выбор "самого свежего" при нескольких
+// совпадениях: брался последний трек в списке, а оказывался соседним.
+// Теперь из совпавших выбирается ближайший по времени.
+// Кэш чистим ДО запроса: иначе сносим только что загруженное.
+window.__musicWidgetApiState.current = null;
+window.__musicWidgetApiState.resolved = null;
+window.__musicWidgetApiState.meta.clear();
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { id: 401, title: "Первый в списке", artist: "Альбом", duration: 203 },
+      { id: 402, title: "На секунду короче", artist: "Альбом", duration: 204 },
+      { id: 403, title: "Нужный", artist: "Альбом", duration: 205 },
+    ],
+  },
+});
+document.body.innerHTML = '<h1>Моя музыка</h1>';
+var nearSound = document.createElement("audio");
+nearSound.src = "https://vk.com/track.mp3";
+// 205.07 - дробное время файла, а API отдаёт целые секунды.
+Object.defineProperty(nearSound, "duration", { value: 205.07, configurable: true });
+Object.defineProperty(nearSound, "paused", { value: false, configurable: true });
+Object.defineProperty(nearSound, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(nearSound);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+// Названия в панели нет намеренно: проверяем выбор по самому времени.
+var nearest = await ask("getState", null);
+assertEqual("page: из соседних длительностей берётся ближайшая",
+  nearest.title, "Нужный");
+assert("page: в диагностике видно, что сверились по времени",
+  nearest.diag && nearest.diag.matchedBy.indexOf("длительность") === 0,
+  JSON.stringify(nearest.diag));
+
+Object.defineProperty(nearSound, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
+
 // --- Подпись не на кнопке ------------------------------------------------------
 //
 // Селектор кнопок широкий: подпись с aria-label лежит часто на иконке или
