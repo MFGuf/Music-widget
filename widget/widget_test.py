@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import sys
 import tempfile
 import time
@@ -524,6 +525,46 @@ def run_checks(w: MusicWidget) -> None:
        dict(w._status_lines())["Адрес обложки"] == "обложки нет",
        dict(w._status_lines())["Адрес обложки"])
 
+    # --- 22. Разбор делается по снимку, где музыка играла -------------------
+    # Диагностику копируют когда получится, а не тогда, когда играет. Снимок
+    # "сейчас ничего не играет" показывает только то, что ничего не играет, и
+    # разбирать его бесполезно - так выглядит поломка, которой нет.
+    w.playing_item = None
+    w.playing_seen_at = 0.0
+    w.states.put({"items": [dict(TRACK, playing=True, pos=42.0, dur=200.0,
+                                  diag={"matchedBy": "ссылка на трек", "rowId": 902,
+                                        "coverUrl": "https://sun9-67.vkuserphoto.ru/impg/Q/w600.jpg"})],
+                  "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    rows = dict(w._status_lines())
+    ok("разбор отмечен как сделанный по снимку, где играло",
+       rows["Разбор сделан"] == "по снимку, где музыка играла", rows["Разбор сделан"])
+    ok("по снимку игры виден правильный трек",
+       "902" in rows["Панель"], rows["Панель"])
+
+    # Музыку остановили, диагностику копируют сейчас.
+    w.states.put({"items": [dict(TRACK, playing=False, pos=0.0, dur=0.0,
+                                  diag={})],
+                  "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    rows = dict(w._status_lines())
+    ok("после остановки разбор всё ещё по снимку, где играло",
+       rows["Разбор сделан"] == "по снимку, где музыка играла", rows["Разбор сделан"])
+    ok("остановившийся снимок не подменяет снимок игры",
+       "902" in rows["Панель"], rows["Панель"])
+    ok("название видно из снимка игры, а не из заголовка раздела",
+       rows["Сейчас играет"] == TRACK["title"], rows["Сейчас играет"])
+
+    # Если музыка не играла ни разу - честно говорим об этом.
+    w.playing_item = None
+    w.playing_seen_at = 0.0
+    w.states.put({"items": [dict(TRACK, playing=False, pos=0.0, dur=0.0, diag={})],
+                  "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    ok("если музыка не играла, сказано прямо",
+       dict(w._status_lines())["Разбор сделан"] == "по текущему снимку: музыка не играла",
+       dict(w._status_lines())["Разбор сделан"])
+
     # --- 19. Диагностику можно скопировать ------------------------------------
     # Переписывать сведения руками смысла нет: написанное от руки рано или
     # поздно становится неправдой. Копируется ровно то, что показано в окне.
@@ -552,6 +593,10 @@ def run_checks(w: MusicWidget) -> None:
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="mw-widget-"))
+    # Свой журнал: иначе проверка писала бы в журнал пользователя, и тот
+    # читал бы в диагностике следы наших прогонов как свои поломки.
+    saved_log = os.environ.get("MUSIC_WIDGET_LOG_DIR")
+    os.environ["MUSIC_WIDGET_LOG_DIR"] = str(tmp / "log")
     # Своя точка входа, иначе проверка перезаписала бы файл работающего у
     # пользователя виджета и тот потерял бы связь с браузером.
     saved_file, saved_dir = ipc.ENDPOINT_FILE, ipc.APP_DIR
@@ -567,6 +612,10 @@ def main() -> int:
     finally:
         widget.bridge.stop()
         ipc.ENDPOINT_FILE, ipc.APP_DIR = saved_file, saved_dir
+        if saved_log is None:
+            os.environ.pop("MUSIC_WIDGET_LOG_DIR", None)
+        else:
+            os.environ["MUSIC_WIDGET_LOG_DIR"] = saved_log
         try:
             widget.root.destroy()
         except Exception:

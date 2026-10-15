@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import socket
 import sys
@@ -18,6 +19,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
+
+# Свой журнал: иначе проверка писала бы в журнал пользователя, и тот
+# читал бы в диагностике следы наших прогонов как свои поломки.
+os.environ["MUSIC_WIDGET_LOG_DIR"] = str(Path(tempfile.mkdtemp(prefix="mw-bridge-log-")))
 
 import bridge_worker  # noqa: E402
 import ipc  # noqa: E402

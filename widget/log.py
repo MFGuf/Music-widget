@@ -31,7 +31,16 @@ from pathlib import Path
 
 # Куда пишем. Тот же каталог, что и точка входа: он уже создаётся при
 # запуске и лежит в профиле пользователя, а не рядом с исходниками.
-LOG_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MusicWidget"
+#
+# Переменная окружения нужна проверкам. Иначе автопрогоны писали бы в
+# журнал пользователя, и тот читал бы в диагностике чужие строки: "кто-то
+# подключился с чужим токеном" или "скрипт страницы не запустился" - это
+# следы наших тестов, а не его браузера. В диагностике это выглядит как
+# поломка у него.
+LOG_DIR = Path(
+    os.environ.get("MUSIC_WIDGET_LOG_DIR")
+    or (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "MusicWidget")
+)
 LOG_FILE = LOG_DIR / "widget.log"
 
 # Больше этого - обрезаем начало. Час работы виджета даёт единицы
@@ -43,7 +52,13 @@ _broken = False
 
 
 def path() -> Path:
-    """Путь к журналу. Отдельная функция, чтобы его можно было показать."""
+    """Путь к журналу. Отдельная функция, чтобы его можно было показать.
+
+    Путь вычисляется заново при каждом обращении, а не берётся из
+    константы: проверки перенаправляют журнал уже после импорта модуля.
+    """
+    if os.environ.get("MUSIC_WIDGET_LOG_DIR"):
+        return Path(os.environ["MUSIC_WIDGET_LOG_DIR"]) / LOG_FILE.name
     return LOG_FILE
 
 
@@ -73,11 +88,12 @@ def write(message: str) -> None:
     if _broken:
         return
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target = path()
     try:
         with _lock:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            _trim(LOG_FILE)
-            with LOG_FILE.open("a", encoding="utf-8", newline="\n") as handle:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _trim(target)
+            with target.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write("%s  %s\n" % (stamp, message))
     except (OSError, ValueError):
         # Диск полон, папка недоступна, антивирус держит файл. Виджет от

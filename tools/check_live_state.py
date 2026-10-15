@@ -32,6 +32,7 @@ check_mv2.py доказывает, что Firefox ставит MV2 и подни
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shutil
 import socket
@@ -190,14 +191,19 @@ def main() -> int:
         # браузер может усыплять фоновые страницы без видимых окон, а это
         # выглядело бы как «расширение молчит». Поэтому оставляем возможность
         # запустить проверку с окнами: MW_HEADFUL=1.
-        import os
         argv = [firefox, "-no-remote", "-profile", str(profile),
                 "--start-debugger-server", str(check_mv2.DEBUGGER_PORT)]
         if not os.environ.get("MW_HEADFUL"):
             argv.append("--headless")
         argv.append(url)
+        # Свой журнал для браузера и для хоста, который он запустит: иначе
+        # проверка оставляет следы в журнале пользователя, и тот читает их
+        # как свои поломки.
+        env = dict(os.environ)
+        env["MUSIC_WIDGET_LOG_DIR"] = str(tmp / "log")
         proc = subprocess.Popen(
-            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env,
         )
         sock = check_mv2.wait_for_port(check_mv2.DEBUGGER_PORT, proc, 60)
         rdp = check_mv2.Rdp(sock)

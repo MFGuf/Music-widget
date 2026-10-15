@@ -116,6 +116,11 @@ class MusicWidget:
         self.last_command: dict | None = None
         # Что происходит с обложками: получилось ли, откуда качали, почему нет.
         self.last_art: dict | None = None
+        # Последний снимок, где музыка играла: по нему разбирают работу.
+        # Диагностику копируют когда получится, а не в тот момент, когда
+        # играет, - и снимок "сейчас ничего не играет" ничего не говорит.
+        self.playing_item: dict | None = None
+        self.playing_seen_at: float = 0.0
 
         # Подключился ли хост и с какого момента. Без второго поля отличить
         # «расширение ещё не успело прислать первый снимок» от «расширение
@@ -193,10 +198,38 @@ class MusicWidget:
     # --- состояние -------------------------------------------------------------
 
     def _current(self) -> dict | None:
+        item = self._current_item()
+        # Разбор берём из снимка, где музыка играла.
+        #
+        # Диагностику копируют когда получится, а музыка в этот момент
+        # обычно не играет: плеер остановлен, вкладка переключена. Из
+        # такого снимка видно только то, что ничего не играет, и разбирать
+        # его бесполезно - так выглядит поломка, которой нет. Поэтому
+        # отдельно держим последний снимок, где трек играл: по нему и
+        # видно, что происходило на самом деле.
+        if item and self._was_playing(item):
+            if self.playing_seen_at <= self.last_state_at:
+                self.playing_item = item
+                self.playing_seen_at = self.last_state_at
+        return item
+
+    def _current_item(self) -> dict | None:
         for item in self.items:
             if item.get("key") == self.selected:
                 return item
         return self.items[0] if self.items else None
+
+    @staticmethod
+    def _was_playing(item: dict) -> bool:
+        """По снимку видно, что музыка играла."""
+        if item.get("playing") or item.get("hasMedia"):
+            return True
+        pos, dur = item.get("pos"), item.get("dur")
+        return bool(pos and dur and pos > 1)
+
+    def _diagnostic_item(self) -> dict:
+        """Снимок, по которому судим о работе: играющий, если он был."""
+        return self.playing_item or self._current_item() or {}
 
     def _extension_alive(self) -> bool:
         return (self.last_state_at > 0
@@ -769,6 +802,9 @@ class MusicWidget:
         endpoint = ipc.read_endpoint()
         age = time.monotonic() - self.last_state_at if self.last_state_at else None
         current = self._current() or {}
+        # Разбор работы - по снимку, где музыка играла.
+        probe = self._diagnostic_item()
+        playing_seen = bool(self.playing_item)
         shape = "свёрнут" if self.collapsed else "развёрнут"
         pinned = "поверх окон" if self.topmost else "не закреплён"
         return [
@@ -784,11 +820,13 @@ class MusicWidget:
             ("Выбрана", str(self.selected)),
             ("Сейчас играет", str(current.get("title") or "—")),
             ("Название из", self._title_source(current)),
-            ("Ответов VK API", self._api_summary(current)),
+            ("Ответов VK API", self._api_summary(probe)),
             ("Кнопки", self._command_text()),
             ("Обложки", self._art_text()),
-            ("Адрес обложки", self._cover_url_text(current)),
-            ("Панель", self._panel_text(current)),
+            ("Адрес обложки", self._cover_url_text(probe)),
+            ("Панель", self._panel_text(probe)),
+            ("Разбор сделан", "по снимку, где музыка играла"
+             if playing_seen else "по текущему снимку: музыка не играла"),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
             ("Журнал", str(journal.path())),
