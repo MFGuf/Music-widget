@@ -157,35 +157,39 @@ function coverVariants(url) {
       + ART_WANT_SIDE + "x" + ART_WANT_SIDE));
     list.push(text.replace(/[?&]size=\d+x\d+/i, "").replace(/[?&]$/, ""));
   }
-  // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
+    // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
   // Подпись считается от размера: без неё картинка отдаётся крупнее.
   if (/vkuserphoto\.ru\/impg\//i.test(text)) {
     const noQuery = text.split("?")[0];
-    // 1. Чистый путь без параметров - часто оригинал максимального размера
-    if (noQuery && noQuery !== text) {
-      list.push(noQuery);
-    }
+    if (noQuery && noQuery !== text) { list.push(noQuery); }
     let t = text;
     t = t.replace(/[?&]sign=[^&#]+/gi, "");
     t = t.replace(/[?&]c_uniq_tag=[^&#]+/gi, "");
-    t = t.replace(/[?&]type=[^&#]+/gi, "");
     t = t.replace(/[?&]quality=[^&#]+/gi, "");
-    t = t.replace(/[?&]size=\d+x\d+/gi, "");
     t = t.replace(/[?&]+/g, "&");
     t = t.replace(/\?&/g, "?");
     t = t.replace(/[?&]$/, "");
-    if (t && t !== text && t !== noQuery) {
-      list.push(t);
+    if (t && t !== text && t !== noQuery) { list.push(t); }
+    let t2 = t || text;
+    t2 = t2.replace(/[?&]type=[^&#]+/gi, "");
+    t2 = t2.replace(/[?&]+/g, "&");
+    t2 = t2.replace(/\?&/g, "?");
+    t2 = t2.replace(/[?&]$/, "");
+    if (t2 && t2 !== t && t2 !== noQuery) { list.push(t2); }
+    const baseFor600 = t2 || t || noQuery || text.split("?")[0];
+    if (baseFor600) {
+      const sep = baseFor600.includes("?") ? "&" : "?";
+      list.push(baseFor600 + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
     }
-    // 2. Явно попросить 600х600 без подписи
-    if (t && !/[?&]size=/i.test(t)) {
-      const sep = t.includes("?") ? "&" : "?";
-      list.push(t + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
-    } else if (noQuery) {
-      list.push(noQuery + "?size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
-    }
+    let withAudio = t2 || t || (noQuery ? noQuery : text.split("?")[0]);
+    const sepA = withAudio.includes("?") ? "&" : "?";
+    list.push(withAudio + sepA + "type=audio&size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
+    list.push(withAudio + sepA + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE + "&type=audio");
+    let tAlbum = (t2 || t || (noQuery ? noQuery : text.split("?")[0]));
+    const sepAl = tAlbum.includes("?") ? "&" : "?";
+    list.push(tAlbum + sepAl + "type=album&size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
   }
-  // Если адрес без расширения jpg/png/webp — тоже пробуем добавить size.
+// Если адрес без расширения jpg/png/webp — тоже пробуем добавить size.
   if (!/\.(jpe?g|png|webp|avif)(\?|$)/i.test(text)) {
     const sep = text.includes("?") ? "&" : "?";
     list.push(text + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
