@@ -160,6 +160,11 @@ function coverVariants(url) {
   // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
   // Подпись считается от размера: без неё картинка отдаётся крупнее.
   if (/vkuserphoto\.ru\/impg\//i.test(text)) {
+    const noQuery = text.split("?")[0];
+    // 1. Чистый путь без параметров - часто оригинал максимального размера
+    if (noQuery && noQuery !== text) {
+      list.push(noQuery);
+    }
     let t = text;
     t = t.replace(/[?&]sign=[^&#]+/gi, "");
     t = t.replace(/[?&]c_uniq_tag=[^&#]+/gi, "");
@@ -169,13 +174,15 @@ function coverVariants(url) {
     t = t.replace(/[?&]+/g, "&");
     t = t.replace(/\?&/g, "?");
     t = t.replace(/[?&]$/, "");
-    if (t !== text) {
+    if (t && t !== text && t !== noQuery) {
       list.push(t);
-      // Попробуем ещё и явно попросить 600х600 без подписи.
-      if (!/[?&]size=/i.test(t)) {
-        const sep = t.includes("?") ? "&" : "?";
-        list.push(t + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
-      }
+    }
+    // 2. Явно попросить 600х600 без подписи
+    if (t && !/[?&]size=/i.test(t)) {
+      const sep = t.includes("?") ? "&" : "?";
+      list.push(t + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
+    } else if (noQuery) {
+      list.push(noQuery + "?size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
     }
   }
   // Если адрес без расширения jpg/png/webp — тоже пробуем добавить size.
