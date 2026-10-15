@@ -738,7 +738,13 @@ function looksLikeApi(url) {
     };
   }
 
-  function currentTrack(media) {
+  // Медиаэлемента может не быть вовсе: на паузе звук пропадает. Способ
+// опознания тогда не проверялся, и в диагностике оставалось значение от
+// прошлого вызова - виджет сообщал об опознании по длительности, хотя
+// в тот раз не опознал ничего. Вводит в заблуждение ровно тогда, когда
+// нужен настоящий ответ.
+function currentTrack(media) {
+    apiState.matchedBy = "";
     const now = Date.now();
     const current = apiState.current;
     const fresh = current && current.title && now - current.at <= CURRENT_TTL_MS;
@@ -807,7 +813,9 @@ function looksLikeApi(url) {
     if (!panel) {
       return "";
     }
-    const images = panel.querySelectorAll("img,[class*='cover'],[class*='thumb']");
+    const images = panel.querySelectorAll(
+      "img,[class*='cover'],[class*='thumb'],[class*='art']," +
+      "[class*='image'],[style*='background']");
     for (const el of images) {
       const src = el.currentSrc || el.src
         || el.getAttribute("src") || el.getAttribute("data-src") || "";
@@ -821,6 +829,31 @@ function looksLikeApi(url) {
       }
     }
     return "";
+  }
+
+  // Название из панели годится не всегда.
+//
+// Рядом с кнопкой VK показывает и название плейлиста: на странице «Моя
+// музыка» это «Hip Hop All Stars 2012», и в виджет оно попадало вместо
+// песни. Отличить плейлист от трека можно по данным, которые уже есть: в
+// кэше лежат настоящие названия треков, и если панельного среди них нет -
+// значит это не песня.
+//
+// Если кэш пуст, отвергнуть нечем: тогда верим панели, как и раньше.
+function panelTitleLooksLikeTrack(text) {
+    const title = String(text || "").trim();
+    if (!title) {
+      return false;
+    }
+    if (!apiMeta.size) {
+      return true;
+    }
+    for (const meta of apiMeta.values()) {
+      if (sameTrack(meta, title)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function readTrackText(media) {
@@ -862,7 +895,7 @@ function looksLikeApi(url) {
     const titleIsUseless = !title || PLACEHOLDER.test(title)
       || sameText(title, heading) || sameText(title, titleFromDocumentTitle());
     const panelTitle = titleIsUseless ? titleFromPlayerPanel() : "";
-    if (panelTitle) {
+    if (panelTitle && panelTitleLooksLikeTrack(panelTitle)) {
       return {
         title: panelTitle,
         artist: pickText(ARTIST_SELECTORS),
@@ -870,6 +903,9 @@ function looksLikeApi(url) {
         fromPanel: true,
       };
     }
+    // Панель назвала не песню, а плейлист. Показывать это вместо названия
+    // хуже, чем не показать ничего: пустое место хотя бы честно молчит.
+    apiState.panelTitleRejected = panelTitle || "";
 
     // На паузе звук пропадает, и опознать трек уже нечем: медиаэлемента нет,
     // одиночного запроса не будет, и в панели может быть пусто. Но показать
@@ -903,6 +939,20 @@ function looksLikeApi(url) {
         return current.coverUrl;
       }
     }
+
+    // Обложка из панели плеера.
+    //
+    // В ответе VK обложки нет вовсе - проверено на живых данных: среди полей
+    // трека (artist, id, owner_id, title, duration, url, track_code...) НИ
+    // ОДНОГО с картинкой. А на экране она есть: панель плеера показывает
+    // обложку играющего трека, и это единственное место, где она есть.
+    // Раньше отсюда брали только подпись для сверки, а картинку брать не
+    // догадались - отсюда 2466 неудачных загрузок.
+    const panelUrl = absoluteUrl(panelCoverUrl());
+    if (panelUrl) {
+      return panelUrl;
+    }
+
     for (const sel of COVER_SELECTORS) {
       let nodes;
       try {
@@ -1534,6 +1584,8 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         mediaDuration: where.durExact ? dur : 0,
         titleSource: text.fromApi ? "api" : "страница",
         matchedBy: apiState.matchedBy || "",
+        // Какое название панели мы отвергли как название плейлиста.
+        panelTitle: apiState.panelTitleRejected || "",
         // Какие поля приходят в треках: по ним ищем обложку.
         fields: (apiState.fields || []).slice(0, 40),
       },

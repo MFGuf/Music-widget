@@ -1234,6 +1234,77 @@ assertEqual("page: при настоящей смене трека виджет 
 Object.defineProperty(swapSound, "ended", { value: true, configurable: true });
 document.body.innerHTML = "";
 
+// --- Панель назвала плейлист, а не песню ---------------------------------
+//
+// С живого отчёта: играет фон, виджет показывает «Hip Hop All Stars
+// 2012» - название плейлиста, а не трека. Ответ VK обложки не содержит
+// вовсе, поэтому обложку приходится брать из панели плеера.
+window.__musicWidgetApiState.meta.clear();
+window.__musicWidgetApiState.current = null;
+window.__musicWidgetApiState.resolved = null;
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { id: 801, artist: "Исполнитель", owner_id: 2000, title: "Настоящая песня",
+        duration: 310, track_code: "abc123",
+        url: "https://vk.com/audio-2000_801" },
+      { id: 802, artist: "Другой", owner_id: 3000, title: "Вторая песня",
+        duration: 420, track_code: "def456",
+        url: "https://vk.com/audio-3000_802" },
+    ],
+  },
+});
+document.body.innerHTML =
+  '<h1>Моя музыка</h1>' +
+  '<div class="player">' +
+  // Обложка задана фоном, а не картинкой: так её и рисует сам плеер, и
+  // обычные селекторы картинок её в принципе не видят.
+  '  <div class="player__art" style="background-image:' +
+  'url(https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100.jpg)"></div>' +
+  '  <button class="play">Play</button>' +
+  '  <span class="track">Hip Hop All Stars 2012</span>' +
+  '</div>';
+var playlistPanel = document.querySelector(".player");
+playlistPanel.getBoundingClientRect = function () {
+  return { width: 300, height: 60 };
+};
+var panelSound = document.createElement("audio");
+panelSound.src = "https://vk.com/track.mp3";
+Object.defineProperty(panelSound, "duration", { value: 310.05, configurable: true });
+Object.defineProperty(panelSound, "paused", { value: false, configurable: true });
+Object.defineProperty(panelSound, "readyState", { value: 4, configurable: true });
+window.HTMLMediaElement.prototype.play.call(panelSound);
+await new Promise(function (r) { setTimeout(r, 20); });
+
+var playlistMixed = await ask("getState", null);
+assert("page: название плейлиста не выдаётся за название песни",
+  playlistMixed.title !== "Hip Hop All Stars 2012",
+  "показано: " + JSON.stringify(playlistMixed.title));
+assertEqual("page: вместо плейлиста показан настоящий трек",
+  playlistMixed.title, "Настоящая песня");
+
+// В ответе VK обложки нет вовсе - значит берём её из панели плеера.
+assertEqual("page: обложка берётся из панели, раз в ответе её нет",
+  playlistMixed.coverUrl, "https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100.jpg");
+
+// Теперь случай настоящий: опознать нечем - длительность плеера не
+// совпадает ни с одной в кэше. Панель по-прежнему называет плейлист,
+// и его название видно в диагностике как отвергнутое.
+Object.defineProperty(panelSound, "duration", { value: 999.5, configurable: true });
+var playlistOnly = await ask("getState", null);
+assert("page: название плейлиста не выдаётся за песню и в этом случае",
+  playlistOnly.title !== "Hip Hop All Stars 2012",
+  "показано: " + JSON.stringify(playlistOnly.title));
+assert("page: в диагностике видно отвергнутое название плейлиста",
+  !!(playlistOnly.diag && playlistOnly.diag.panelTitle === "Hip Hop All Stars 2012"),
+  JSON.stringify(playlistOnly.diag));
+assert("page: когда ничего не опознали, диагностика не врёт про старый разбор",
+  playlistOnly.diag && !playlistOnly.diag.matchedBy,
+  JSON.stringify(playlistOnly.diag));
+
+Object.defineProperty(panelSound, "ended", { value: true, configurable: true });
+document.body.innerHTML = "";
+
 // --- Подпись не на кнопке ------------------------------------------------------
 //
 // Селектор кнопок широкий: подпись с aria-label лежит часто на иконке или
