@@ -1,3 +1,11 @@
+  function normalizePanelArt(url) {
+    if (!url) return "";
+    if (url.includes("vkuserphoto.ru/impg/")) {
+      return url.split("?")[0];
+    }
+    return url;
+  }
+
 "use strict";
 
 // Скрипт ГЛАВНОГО мира страницы VK (main world).
@@ -872,12 +880,14 @@ function currentTrack(media) {
       const src = el.currentSrc || el.src
         || el.getAttribute("src") || el.getAttribute("data-src") || "";
       if (isImageUrl(src)) {
-        return src;
+        const ns = normalizePanelArt(src);
+        if (ns) return ns;
       }
       const style = el.getAttribute && el.getAttribute("style");
       const url = style && String(style).match(/url\((['"]?)([^)'"]+)\1\)/);
       if (url && isImageUrl(url[2])) {
-        return url[2];
+        const ns2 = normalizePanelArt(url[2]);
+        if (ns2) return ns2;
       }
     }
     return "";
