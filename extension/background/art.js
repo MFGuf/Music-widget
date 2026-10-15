@@ -72,14 +72,21 @@ function putArtCache(ck, data) {
 // её вчетверо. Меняем размер в адресе на побольше - VK отдаст ту же
 // картинку, но настоящую.
 //
+// Но только там, где это можно. Адрес с подписью (sign=) подписан под
+// конкретный размер: изменим размер - получим отказ, и обложка не загрузится
+// вовсе. Такой адрес оставляем как есть.
+//
 // Адрес без размера менять нечем: он один на все размеры.
 function biggerCoverUrl(url) {
   const text = String(url || "");
-  const sized = text.match(/\/w(\d+)(\.(?:jpe?g|png|webp))?$/i);
+  if (/[?&]sign=/i.test(text)) {
+    return text;
+  }
+  const sized = text.match(/\/w(\d+)(\.(?:jpe?g|png|webp))?(\?|$)/i);
   if (!sized) {
     return text;
   }
-  return text.slice(0, sized.index) + "/w" + ART_WANT_SIDE + (sized[2] || ".jpg");
+  return text.slice(0, sized.index) + "/w" + ART_WANT_SIDE + (sized[2] || ".jpg") + (sized[3] || "");
 }
 
 function artUrlFor(item) {

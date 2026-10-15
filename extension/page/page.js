@@ -1010,6 +1010,41 @@ function panelDump() {
     return parts.join(" | ");
   }
 
+  // Что вокруг кнопки игры - цепочкой вверх.
+//
+// Селекторы VK приходилось угадывать, и каждая догадка стоила пользователю
+// круг: панель искалась по одним правилам и на живой странице оказывалась
+// не той. Разбор самой панели был пуст именно поэтому. Цепочка вверх от
+// кнопки всегда не пуста и показывает, где на самом деле лежит название и
+// где картинка.
+function playButtonDump() {
+    const button = findPlayButton();
+    if (!button) {
+      return "кнопки игры нет";
+    }
+    const parts = [];
+    let node = button;
+    for (let step = 0; step < 7 && node; step++) {
+      const cls = typeof node.className === "string"
+        ? node.className.trim().split(/\s+/).slice(0, 3).join(".")
+        : "";
+      const name = node.tagName.toLowerCase()
+        + (node.id ? "#" + node.id : "")
+        + (cls ? "." + cls : "");
+      const text = shortText(node, 60);
+      const pics = node.querySelectorAll
+        ? node.querySelectorAll("img,[style*='background'],[class*='art'],[class*='cover']").length
+        : 0;
+      parts.push(name
+        + (text ? " «" + text + "»" : "")
+        + (pics ? " картинок=" + pics : "")
+        + (node.getAttribute && node.getAttribute("data-audio-id")
+          ? " data-audio-id=" + node.getAttribute("data-audio-id") : ""));
+      node = node.parentElement;
+    }
+    return parts.join(" | ");
+  }
+
   function readCoverUrl(fromApi, media) {
     // Обложка из API точнее: в разметке страницы легко схватить картинку
     // альбома плейлиста вместо обложки играющего трека. Но если название
@@ -1686,6 +1721,11 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         coverSource: apiState.coverSource || "",
         // Что в панели плеера на самом деле.
         panel: panelDump(),
+        // И главное: что вокруг кнопки игры.
+        playButton: playButtonDump(),
+        // Адрес обложки целиком: в нём видно, откуда картинка и почему
+        // плохое качество.
+        coverUrl: coverUrl || "",
         // Какие поля приходят в треках: по ним ищем обложку.
         fields: (apiState.fields || []).slice(0, 40),
       },

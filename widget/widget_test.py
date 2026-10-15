@@ -500,6 +500,30 @@ def run_checks(w: MusicWidget) -> None:
        "звук вне страницы" in panel_line and "обложка из" not in panel_line,
        panel_line)
 
+    # --- 21. По адресу обложки видно, почему качество плохое -------------
+    # Пользователь жаловался на мыло: маленький размер зашит прямо в адрес,
+    # а у подписанного адреса размер не поменять.
+    w.states.put({"items": [dict(TRACK, diag={
+                      "matchedBy": "ссылка на трек", "mediaConnected": True,
+                      "coverUrl": "https://sun9-67.vkuserphoto.ru/impg/Q_eJA/w100.jpg?size=100x100&sign=abc",
+                      "playButton": "button.play | div.player «Вторая»"})],
+                  "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    addr_line = dict(w._status_lines())["Адрес обложки"]
+    ok("в диагностике виден полный адрес обложки",
+       "vkuserphoto.ru/impg/Q_eJA/w100.jpg" in addr_line, addr_line)
+    ok("видно, что размер зашит в адрес",
+       "размер запрошен в адресе" in addr_line, addr_line)
+    ok("видно, что подписанный адрес размер не поменять",
+       "подписан" in addr_line, addr_line)
+
+    w.states.put({"items": [dict(TRACK, diag={"coverUrl": ""})],
+                  "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    ok("когда обложки нет, сказано прямо",
+       dict(w._status_lines())["Адрес обложки"] == "обложки нет",
+       dict(w._status_lines())["Адрес обложки"])
+
     # --- 19. Диагностику можно скопировать ------------------------------------
     # Переписывать сведения руками смысла нет: написанное от руки рано или
     # поздно становится неправдой. Копируется ровно то, что показано в окне.

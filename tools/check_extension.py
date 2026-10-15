@@ -256,12 +256,32 @@ def check_no_stale_files():
           "background/api.js удалён, но вернулся в репозиторий")
 
 
+
+def check_cover_url_reported():
+    """Адрес обложки должен попадать в диагностику целиком.
+
+    Пользователь жаловался на мыло, и по обрезанному адресу это не
+    определить: качество зависит от того, какой размер запрошен и есть ли
+    подпись, а обе вещи видны только в полном адресе.
+    """
+    page = EXT / "page" / "page.js"
+    if not page.exists():
+        return
+    text = page.read_text(encoding="utf-8")
+    if "coverUrl: coverUrl" in text:
+        return
+    problems.append(
+        "page.js не кладёт адрес обложки в диагностику: по обрезанному "
+        "адресу нельзя понять, почему картинка плохого качества"
+    )
+
 def main():
     manifest = check_manifest()
     if manifest:
         check_host_name(manifest)
     check_art_uses_seen_fields()
     check_art_asks_bigger()
+    check_cover_url_reported()
     check_js_pitfalls()
     check_no_stale_files()
 

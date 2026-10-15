@@ -787,6 +787,7 @@ class MusicWidget:
             ("Ответов VK API", self._api_summary(current)),
             ("Кнопки", self._command_text()),
             ("Обложки", self._art_text()),
+            ("Адрес обложки", self._cover_url_text(current)),
             ("Панель", self._panel_text(current)),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
@@ -812,6 +813,8 @@ class MusicWidget:
             parts.append("отвергли «%s»" % diag["panelTitle"])
         if diag.get("panel"):
             parts.append(str(diag["panel"])[:400])
+        if diag.get("playButton"):
+            parts.append(str(diag["playButton"])[:500])
         return ", ".join(parts)
 
     def _art_text(self) -> str:
@@ -830,9 +833,26 @@ class MusicWidget:
             parts.append("ошибка: " + error)
         url = art.get("url") or ""
         if url:
-            parts.append("качали с " + url[:60])
+            parts.append("качали с " + url[:140])
         elif not error:
             parts.append("адрес обложки не найден в ответе VK")
+        return ", ".join(parts)
+
+    def _cover_url_text(self, item) -> str:
+        """Адрес обложки целиком: в нём видно, откуда картинка.
+
+        По адресу сразу понятно, чья это картинка и почему качество плохое:
+        маленький размер зашит прямо в него.
+        """
+        diag = (item or {}).get("diag") or {}
+        url = str(diag.get("coverUrl") or "").strip()
+        if not url:
+            return "обложки нет"
+        parts = [url]
+        if "/w" in url:
+            parts.append("размер запрошен в адресе")
+        if "sign=" in url:
+            parts.append("адрес подписан, размер не поменять")
         return ", ".join(parts)
 
     def _command_text(self) -> str:
