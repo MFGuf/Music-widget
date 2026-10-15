@@ -857,6 +857,18 @@ class MusicWidget:
             parts.append("поля VK: " + ", ".join(diag["fields"][:14]))
         return ", ".join(parts)
 
+    def _diagnostics_text(self) -> str:
+        """Вся диагностика текстом: строки состояния и хвост журнала.
+
+        Копируется целиком, чтобы можно было отдать сведения не переписывая
+        их руками: переписанное рано или поздно становится неправдой.
+        """
+        rows = ["%s: %s" % (name, value) for name, value in self._status_lines()]
+        rows.append("")
+        rows.append("--- журнал ---")
+        rows.append(self._log_tail())
+        return "\n".join(rows)
+
     def _show_status(self) -> None:
         """Окно со статусом и хвостом журнала.
 
@@ -896,8 +908,30 @@ class MusicWidget:
         def close():
             window.destroy()
 
-        tk.Button(window, text="Закрыть", command=close, bg=ACCENT,
-                  fg="#ffffff", relief="flat", takefocus=0).pack(pady=(0, 12))
+        # Что было скопировано, видно тут же: буфер обмена на Windows
+        # переживает закрытие окна, пока жив сам виджет.
+        hint = tk.Label(window, text="Ctrl+V вставит скопированное",
+                        bg=CARD, fg=MUTED, font=("Segoe UI", 9))
+        hint.pack(pady=(0, 6))
+
+        def copy_all():
+            """Копирует диагностику целиком - вместе с журналом."""
+            try:
+                window.clipboard_clear()
+                window.clipboard_append(self._diagnostics_text())
+                window.update()
+            except tk.TclError as exc:
+                hint.configure(text="Скопировать не вышло: %s" % exc, fg="#ff8080")
+                return
+            hint.configure(text="Скопировано в буфер обмена", fg="#7ce38b")
+
+        buttons = tk.Frame(window, bg=CARD)
+        buttons.pack(pady=(0, 12))
+        tk.Button(buttons, text="Скопировать всё", command=copy_all,
+                  bg=ACCENT, fg="#ffffff", relief="flat", takefocus=0
+                  ).pack(side="left", padx=(0, 8))
+        tk.Button(buttons, text="Закрыть", command=close, bg="#3a3a44",
+                  fg=TEXT, relief="flat", takefocus=0).pack(side="left")
         window.protocol("WM_DELETE_WINDOW", close)
 
     @staticmethod

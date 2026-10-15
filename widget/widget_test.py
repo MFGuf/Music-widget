@@ -473,6 +473,31 @@ def run_checks(w: MusicWidget) -> None:
     ok("причина сбоя загрузки обложки видна в диагностике", "HTTP 403" in line, line)
     ok("в диагностике видно, откуда качали", "sun1-96" in line, line)
 
+    # --- 19. Диагностику можно скопировать ------------------------------------
+    # Переписывать сведения руками смысла нет: написанное от руки рано или
+    # поздно становится неправдой. Копируется ровно то, что показано в окне.
+    copied = w._diagnostics_text()
+    ok("в копии есть все строки окна",
+       all(("%s: %s" % pair) in copied for pair in w._status_lines()),
+       copied[:200])
+    ok("в копии есть и хвост журнала", "--- журнал ---" in copied, copied[-120:])
+    ok("в копии видны сведения об обложках", "HTTP 403" in copied, copied[:200])
+
+    # Главное, ради чего копирование и затевалось: строка про ответы VK
+    # целиком, с опознанием и полями - её и присылают.
+    w.states.put({"items": [dict(TRACK, diag={"apiHits": 73, "apiTracks": 201,
+                                               "matchedBy": "длительность",
+                                               "fields": ["id", "title", "thumb_src"]})],
+                  "selected": "tab:7", "note": "Подключено"})
+    w._drain_states()
+    copied = w._diagnostics_text()
+    ok("в копии виден полный разбор ответов VK",
+       "Ответов VK API: 73 ответов" in copied
+       and "треков в кэше 201" in copied
+       and "опознан по: длительность" in copied
+       and "поля VK: id, title, thumb_src" in copied,
+       copied[:300])
+
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="mw-widget-"))
