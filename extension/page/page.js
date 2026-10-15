@@ -136,9 +136,75 @@ const MAX_SEEN_FIELDS = 40;
     }
   }
 
+  // Что вообще считать адресом картинки.
+  //
+  // Прежняя проверка требовала и https://, и расширения .jpg. Таких
+  // обложек в ответе не нашлось ни одной за 211 попыток: VK отдаёт адреса
+  // и без расширения, и относительные ("/images/..."), а сам домен
+  // картинок - userapi.com - расширением не заканчивается.
   function isImageUrl(value) {
-    return typeof value === "string" && /^https?:\/\//i.test(value)
-      && /\.(jpe?g|png|webp)(\?|$)/i.test(value);
+    if (typeof value !== "string" || !value) {
+      return false;
+    }
+    const text = value.trim();
+    if (!/^(https?:)?\/\//i.test(text) && text.charAt(0) !== "/") {
+      return false;
+    }
+    return /\.(jpe?g|png|webp|gif)(\?|$)/i.test(text)
+      || /userapi\.com/i.test(text)
+      || /\/(thumb|cover|album_thumb|image)/i.test(text);
+  }
+
+  // Относительный адрес VK открывать на полном.
+  function absoluteUrl(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return "";
+    }
+    return /^https?:\/\//i.test(text) ? text
+      : text.charAt(0) === "/" ? "https://vk.com" + text : "";
+  }
+
+  // Обход ответа вглубь: обложка лежит не только в самом треке, но и
+  // рядом - в owner.photo у каждого трека повторяется, и она же годна
+  // как обложка, если отдельной у трека не нашлось.
+  function findImageDeep(value, depth) {
+    if (depth > 3 || value === null || value === undefined) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return isImageUrl(value) ? absoluteUrl(value) : "";
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = findImageDeep(item, depth + 1);
+        if (found) {
+          return found;
+        }
+      }
+      return "";
+    }
+    if (typeof value !== "object") {
+      return "";
+    }
+    const keys = Object.keys(value);
+    // Сначала поля, в имени которых есть смысл картинки: так обложка
+    // находится быстрее и не зависит от её вложенности.
+    for (const key of keys) {
+      if (/cover|thumb|photo|image|img|pic/i.test(key)) {
+        const found = findImageDeep(value[key], depth + 1);
+        if (found) {
+          return found;
+        }
+      }
+    }
+    for (const key of keys) {
+      const found = findImageDeep(value[key], depth + 1);
+      if (found) {
+        return found;
+      }
+    }
+    return "";
   }
 
   function pickCoverUrl(node) {
@@ -152,7 +218,7 @@ const MAX_SEEN_FIELDS = 40;
     for (const field of fields) {
       const value = node[field];
       if (isImageUrl(value)) {
-        return value;
+        return absoluteUrl(value);
       }
     }
 
@@ -161,29 +227,23 @@ const MAX_SEEN_FIELDS = 40;
     if (Array.isArray(sizes)) {
       for (const item of sizes) {
         if (item && isImageUrl(item.url)) {
-          return item.url;
+          return absoluteUrl(item.url);
         }
       }
     }
 
-    // Общий случай: любое поле ответа, значение которого похоже на
-    // картинку. Перебор медленный, но выполняется один раз на трек, а не
-    // на каждый кадр.
-    for (const key of Object.keys(node)) {
-      const value = node[key];
-      if (isImageUrl(value)) {
-        return value;
-      }
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          if (item && typeof item === "object" && isImageUrl(item.url)) {
-            return item.url;
-          }
-        }
-      }
-    }
-    return "";
+    // Общий случай: обложка может лежать в любом поле ответа и на любой
+    // глубине - у трека её может не быть вовсе, зато рядом, в owner.photo,
+    // лежит картинка сообщества, и она же годится как обложка.
+    return findImageDeep(node, 0);
   }
+
+  // Доступ к разбору обложек нужен проверкам: иначе единственный способ
+// убедиться, что адрес распознан, - это дождаться, пока VK его пришлёт.
+window.__musicWidgetCover = {
+  pick: pickCoverUrl,
+  signature: coverSignature,
+};
 
   // Устойчивый признак одной и той же картинки.
   //
@@ -192,12 +252,24 @@ const MAX_SEEN_FIELDS = 40;
   // бессмысленно, а вот часть пути до размера - это и есть сама обложка.
   function coverSignature(url) {
     const text = String(url || "");
-    const sized = text.match(/\/([A-Za-z0-9_-]{6,})\/w\d+\.(jpe?g|png|webp)/i);
+    const sized = text.match(/\/([A-Za-z0-9_-]{6,})\/w\d+/i);
     if (sized) {
       return sized[1].toLowerCase();
     }
-    const plain = text.match(/\/([A-Za-z0-9_-]{6,})\.(jpe?g|png|webp)/i);
-    return plain ? plain[1].toLowerCase() : "";
+    const withExt = text.match(/\/([A-Za-z0-9_-]{6,})\.(jpe?g|png|webp)/i);
+    if (withExt) {
+      return withExt[1].toLowerCase();
+    }
+    // Адрес может прийти без расширения - тогда обложку узнаёт последний
+    // кусок пути. Служебные части вроде "w100" отбрасываем.
+    const parts = text.split("?")[0].split("/").filter(Boolean);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i].replace(/\.(jpe?g|png|webp|gif)$/i, "");
+      if (part.length >= 6 && !/^w\d+$/i.test(part) && part.indexOf(".") < 0) {
+        return part.toLowerCase();
+      }
+    }
+    return "";
   }
 
   // Текущий трек по данным API.

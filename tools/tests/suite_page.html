@@ -1130,6 +1130,57 @@ assert("page: в диагностике видно, что сверились п
 Object.defineProperty(nearSound, "ended", { value: true, configurable: true });
 document.body.innerHTML = "";
 
+// --- Обложка там, где её не ждали --------------------------------------
+//
+// Обложка не находилась 211 раз подряд: искали по семи именам полей и по
+// адресам, у которых есть расширение .jpg. VK отдаёт иначе - без
+// расширения, относительно и не в самом треке, а рядом: в owner.photo у
+// каждого трека повторяется картинка сообщества, и она же годится.
+var cover = window.__musicWidgetCover;
+assert("page: разбор обложек доступен проверкам", !!cover, "нет window.__musicWidgetCover");
+
+assertEqual("page: адрес без расширения распознаётся как обложка",
+  cover.pick({ thumb_src: "https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100" }),
+  "https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100");
+
+assertEqual("page: относительный адрес дополняется до полного",
+  cover.pick({ cover: { photo: "/images/vk_music.png" } }),
+  "https://vk.com/images/vk_music.png");
+
+assertEqual("page: обложка берётся из owner.photo, когда в треке её нет",
+  cover.pick({ owner: { photo: "https://sun1-30.userapi.com/ww/ownerpic.jpg" } }),
+  "https://sun1-30.userapi.com/ww/ownerpic.jpg");
+
+assertEqual("page: трек без картинок даёт пустой адрес, а не мусор",
+  cover.pick({ id: 504, title: "Совсем без картинок", artist: "Четвёртый" }), "");
+
+// Адрес страницы не картинка - иначе в обложку попадёт что угодно.
+assertEqual("page: ссылка на страницу не считается обложкой",
+  cover.pick({ url: "https://vk.com/artist1" }), "");
+
+// Одна и та же обложка при разном размере должна узнаваться как одна.
+assertEqual("page: обложка узнаётся при разном размере картинки",
+  cover.signature("https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100"),
+  cover.signature("https://sun1-96.userapi.com/c1_2/AbCdEfGh/w300.jpg"));
+assertEqual("page: обложка узнаётся и по адресу без расширения",
+  cover.signature("https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100"),
+  cover.signature("https://sun1-96.userapi.com/c1_2/AbCdEfGh"));
+
+// Имена полей из ответа видны в диагностике - по ним ищем настоящую обложку.
+await apiCall("https://api.vk.com/method/audio.get", {
+  response: {
+    items: [
+      { id: 601, title: "С полями", artist: "Первый", duration: 320,
+        thumb_src: "https://sun1-96.userapi.com/c1_2/AbCdEfGh/w100" },
+    ],
+  },
+});
+var coverState = await ask("getState", null);
+assert("page: имена полей ответа VK собраны в диагностику",
+  !!(coverState.diag && coverState.diag.fields
+    && coverState.diag.fields.length > 0),
+  JSON.stringify(coverState.diag));
+
 // --- Подпись не на кнопке ------------------------------------------------------
 //
 // Селектор кнопок широкий: подпись с aria-label лежит часто на иконке или
