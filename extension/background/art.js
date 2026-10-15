@@ -152,12 +152,50 @@ function coverVariants(url) {
   const list = [];
   const sized = text.match(/([?&])size=\d+x\d+/i);
   if (sized) {
+    // Попробуем попросить крупнее с тем же подписанным адресом.
     list.push(text.replace(/([?&])size=\d+x\d+/i, "$1size="
       + ART_WANT_SIDE + "x" + ART_WANT_SIDE));
     list.push(text.replace(/[?&]size=\d+x\d+/i, "").replace(/[?&]$/, ""));
   }
+  // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
+  // Подпись считается от размера: без неё картинка отдаётся крупнее.
+  if (/vkuserphoto\.ru\/impg\//i.test(text)) {
+    let t = text;
+    t = t.replace(/[?&]sign=[^&#]+/gi, "");
+    t = t.replace(/[?&]c_uniq_tag=[^&#]+/gi, "");
+    t = t.replace(/[?&]type=[^&#]+/gi, "");
+    t = t.replace(/[?&]quality=[^&#]+/gi, "");
+    t = t.replace(/[?&]size=\d+x\d+/gi, "");
+    t = t.replace(/[?&]+/g, "&");
+    t = t.replace(/\?&/g, "?");
+    t = t.replace(/[?&]$/, "");
+    if (t !== text) {
+      list.push(t);
+      // Попробуем ещё и явно попросить 600х600 без подписи.
+      if (!/[?&]size=/i.test(t)) {
+        const sep = t.includes("?") ? "&" : "?";
+        list.push(t + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
+      }
+    }
+  }
+  // Если адрес без расширения jpg/png/webp — тоже пробуем добавить size.
+  if (!/\.(jpe?g|png|webp|avif)(\?|$)/i.test(text)) {
+    const sep = text.includes("?") ? "&" : "?";
+    list.push(text + sep + "size=" + ART_WANT_SIDE + "x" + ART_WANT_SIDE);
+  }
   list.push(text);
-  return list;
+  // Уберём дубли, сохраняя порядок (крупнее-попытки первыми).
+  const seen = new Set();
+  const out = [];
+  for (const u of list) {
+    const key = u.trim();
+    if (!key) continue;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out;
 }
 
 async function fetchBlob(url) {
