@@ -874,8 +874,8 @@ function currentTrack(media) {
       return "";
     }
     const images = panel.querySelectorAll(
-      "img,[class*='cover'],[class*='thumb'],[class*='art']," +
-      "[class*='image'],[style*='background']");
+      "img,[class*='cover'],[class*='Cover'],[class*='art'],[class*='Art'],[class*='thumb'],[class*='Thumb']," +
+      "[class*='image'],[class*='player'],[style*='background-image']");
     for (const el of images) {
       const src = el.currentSrc || el.src
         || el.getAttribute("src") || el.getAttribute("data-src") || "";
