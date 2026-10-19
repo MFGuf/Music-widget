@@ -157,36 +157,26 @@ function coverVariants(url) {
       + ART_WANT_SIDE + "x" + ART_WANT_SIDE));
     list.push(text.replace(/[?&]size=\d+x\d+/i, "").replace(/[?&]$/, ""));
   }
-      // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
+        // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
   // Подпись считается от размера: без неё картинка отдаётся крупнее.
   if (/vkuserphoto\.ru\/impg\//i.test(text)) {
     const noQuery = text.split("?")[0];
     if (noQuery && noQuery !== text) { list.push(noQuery); }
     let t = text;
-    t = t.replace(/[?&]sign=[^&#]+/gi, "");
-    t = t.replace(/[?&]c_uniq_tag=[^&#]+/gi, "");
-    t = t.replace(/[?&]uniq_tag=[^&#]+/gi, "");
-    t = t.replace(/[?&]c_uniq=[^&#]+/gi, "");
-    t = t.replace(/[?&]quality=[^&#]+/gi, "");
-    t = t.replace(/[?&]type=[^&#]+/gi, "");
-    t = t.replace(/[?&]+/g, "&");
-    t = t.replace(/\?&/g, "?");
-    t = t.replace(/[?&]$/, "");
-    if (t && t !== noQuery) { list.push(t); }
-    // с size без подписи
-    if (t && !/[?&]size=/i.test(t)) {
-      const s=t.includes("?")?"&":"?"; list.push(t+s+"size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);
+    // убрать все query-параметры
+    t = noQuery;
+    if (t) list.push(t);
+    // с size 600 без подписи
+    if (t) { const s=t.includes("?")?"&":"?"; list.push(t+s+"size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE); }
+    // варианты с type
+    if (t) {
+      list.push(t+"?type=album&size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);
+      list.push(t+"?size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE+"&type=album");
+      list.push(t+"?type=audio&size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);
+      list.push(t+"?size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE+"&type=audio");
+      list.push(t+"?type=large&size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);
     }
-    if (noQuery) {
-      const s=noQuery.includes("?")?"&":"?"; list.push(noQuery+s+"size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);
-    }
-    // попробовать без type но с size в разных местах
-    let ta = t || text; ta = ta.replace(/[?&]type=[^&#]+/gi,"");
-    ta = ta.replace(/[?&]+/g,"&"); ta = ta.replace(/\?&/g,"?"); ta = ta.replace(/[?&]$/,"");
-    if (ta && ta!==t) { if (!/[?&]size=/i.test(ta)){ const s=ta.includes("?")?"&":"?"; list.push(ta+s+"size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);} list.push(ta); }
-    // type=album
-    let tal = noQuery || text.split("?")[0]; list.push(tal+"?type=album&size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE);
-    list.push(tal+"?size="+ART_WANT_SIDE+"x"+ART_WANT_SIDE+"&type=album");
+    // попробовать разные домены/пути? иногда sun* разный, но путь тот же
   }
 // Если адрес без расширения jpg/png/webp — тоже пробуем добавить size.
   if (!/\.(jpe?g|png|webp|avif)(\?|$)/i.test(text)) {
