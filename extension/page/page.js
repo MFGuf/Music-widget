@@ -1099,7 +1099,7 @@ function playButtonDump() {
       for (const el of nodes) {
         const src = el.currentSrc || el.src || "";
         if (src && !src.startsWith("data:")) {
-          return src;
+          const ns = normalizePanelArt(src); if (ns) return ns;
         }
       }
     }
