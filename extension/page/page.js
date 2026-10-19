@@ -1096,6 +1096,49 @@ function playButtonDump() {
     return parts.join(" | ");
   }
 
+    // Обложка из строки плейлиста, к которой привязан играющий звук.
+//
+// Звук лежит внутри строки списка, а у строки есть своя обложка - и она
+// крупная (300x300 в живом разборе), тогда как панель плеера отдаёт иконку
+// 34x34. Даже без кнопки игры строка находится: поднимаемся от самого
+// медиаэлемента. Имя файла у строки и у панели совпадает, поэтому берём
+// именно эту картинку, а не первую попавшуюся.
+function coverFromMediaRow(media) {
+    if (!media || !media.isConnected) {
+      return "";
+    }
+    let node = media;
+    for (let step = 0; step < 7 && node; step++) {
+      if (node.querySelectorAll) {
+        const imgs = node.querySelectorAll("img,[style*='background']");
+        let best = "";
+        let bestSide = 0;
+        for (const el of imgs) {
+          let src = el.currentSrc || el.src
+            || el.getAttribute("src") || el.getAttribute("data-src") || "";
+          if (!src) {
+            const style = el.getAttribute && el.getAttribute("style");
+            const m = style && String(style).match(/url\((['"]?)([^)'"]+)\1\)/);
+            src = m ? m[2] : "";
+          }
+          if (!src || src.startsWith("data:")) {
+            continue;
+          }
+          const side = Math.max(el.naturalWidth || 0, el.naturalHeight || 0);
+          if (side > bestSide) {
+            bestSide = side;
+            best = src;
+          }
+        }
+        if (bestSide >= 200) {
+          return best;
+        }
+      }
+      node = node.parentElement;
+    }
+    return "";
+  }
+
   function readCoverUrl(fromApi, media) {
     // Обложка из API точнее: в разметке страницы легко схватить картинку
     // альбома плейлиста вместо обложки играющего трека. Но если название
@@ -1126,18 +1169,40 @@ function playButtonDump() {
     // играет СЕЙЧАС, а название мы могли угадать по времени. Получится
     // обложка одной песни с названием другой. Поэтому при угадывании по
     // времени обложку не берём: пусть лучше её не будет, чем будет не та.
+    // Крупную копию той же картинки берём ВСЕГДА.
+    //
+    // Раньше панельная обложка бралась только при надёжном опознании: боялись
+    // показать обложку одной песни с названием другой. Но имя файла - это уже
+    // сильное доказательство: если на странице нашлась картинка с тем же
+    // именем, что в панели, это та же обложка. А живой разбор показал, что
+    // панель отдаёт 34x34, тогда как та же картинка лежит рядом в 300x300 -
+    // и на слабом матче мы эту крупную копию теряли.
+    const panelUrl = absoluteUrl(panelCoverUrl());
+    if (panelUrl) {
+      const big = biggestSameImage(panelUrl);
+      if (big) {
+        apiState.coverSource = "панель плеера, крупный размер";
+        return big;
+      }
+    }
+
+    // Слабое опознание - панельную обложку не подставляем: она от того, что
+    // играет сейчас, а название могло быть угадано по времени. Но обложку из
+    // строки плейлиста, к которой привязан сам звук, взять можно: она
+    // принадлежит той же строке, что и медиаэлемент.
+    const rowCover = coverFromMediaRow(media);
+    if (rowCover) {
+      apiState.coverSource = "строка плейлиста";
+      return rowCover;
+    }
+
     const RELIABLE_MATCH = [
       "ссылка на трек", "id", "обложка", "ответ VK", "длительность и название",
     ];
     const known = RELIABLE_MATCH.indexOf(apiState.matchedBy) >= 0;
-    if (known) {
-      const panelUrl = absoluteUrl(panelCoverUrl());
-      if (panelUrl) {
-        const big = biggestSameImage(panelUrl);
-        apiState.coverSource = big ? "панель плеера, крупный размер"
-                                   : "панель плеера";
-        return big || panelUrl;
-      }
+    if (known && panelUrl) {
+      apiState.coverSource = "панель плеера";
+      return panelUrl;
     }
 
     for (const sel of COVER_SELECTORS) {

@@ -268,6 +268,34 @@ window.__token = "тестовый-токен";
     assert("page: незагруженная картинка (0x0) не выдаётся за крупную",
       !st.coverUrl || st.coverUrl.indexOf("600x600") < 0, st.coverUrl);
 
+    // --- обложка из строки плейлиста (звук внутри строки) ---------------
+    //
+    // Панели с кнопкой игры может не быть вовсе, но звук всё равно лежит
+    // внутри строки списка, а у строки есть крупная обложка (300x300).
+    // Живой разбор: панель 34x34, строка 300x300, то же имя файла.
+    mockPlayer({ title: "Сборник", artist: "Разное" });
+    var audioRow = document.createElement("div");
+    audioRow.className = "audio-row";
+    var rowCover = document.createElement("img");
+    rowCover.className = "audio-row__cover";
+    rowCover.src = "https://sun1-15.vkuserphoto.ru/impg/x/U-kS3fxQLVk.jpg?size=300x300";
+    Object.defineProperty(rowCover, "naturalWidth", { value: 300, configurable: true });
+    Object.defineProperty(rowCover, "naturalHeight", { value: 300, configurable: true });
+    audioRow.appendChild(rowCover);
+    var rowAudio = document.createElement("audio");
+    rowAudio.src = "https://vk.com/track.mp3";
+    Object.defineProperty(rowAudio, "duration", { value: 200, configurable: true });
+    audioRow.appendChild(rowAudio);
+    document.body.appendChild(audioRow);
+    // Заглушки в панели - маленькая картинка.
+    var panelSmall = document.querySelector(".player__cover img");
+    Object.defineProperty(panelSmall, "naturalWidth", { value: 34, configurable: true });
+    Object.defineProperty(panelSmall, "naturalHeight", { value: 34, configurable: true });
+    panelSmall.src = "https://sun1-15.vkuserphoto.ru/impg/x/U-kS3fxQLVk.jpg?size=34x34";
+    st = await ask("getState", null);
+    assert("page: обложка берётся крупной из строки плейлиста, а не 34 из панели",
+      st.coverUrl && st.coverUrl.indexOf("300x300") >= 0, st.coverUrl);
+
     // --- признак воспроизведения -----------------------------------------
 
     mockPlayer({ playing: true });
