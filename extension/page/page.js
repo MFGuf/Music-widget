@@ -1115,19 +1115,29 @@ function playButtonDump() {
     // ОДНОГО с картинкой. А на экране она есть: панель плеера показывает
     // обложку играющего трека, и это единственное место, где она есть.
     //
-    // Но брать её можно не всегда. Обложка из панели принадлежит тому, что
-    // играет СЕЙЧАС, а название мы в этот раз угадали по времени. Получится
-    // обложка одной песни с названием другой - ровно то, на что указал
-    // пользователь. Поэтому при угадывании по времени обложку из панели не
-    // берём: пусть лучше её не будет, чем будет не та.
+    // Но панельная обложка - миниатюра 34x34, а её показывают во всю
+    // карточку. Живой разбор показал, что ТА ЖЕ картинка лежит на странице
+    // крупно (300x300): имя файла совпадает, отличаются только размер и
+    // подпись. Поэтому берём не первый попавшийся адрес, а ищем по всему
+    // документу самые крупные картинки и выбираем ту же обложку, но в
+    // настоящем размере.
+    //
+    // Брать обложку можно не всегда. Обложка из панели принадлежит тому, что
+    // играет СЕЙЧАС, а название мы могли угадать по времени. Получится
+    // обложка одной песни с названием другой. Поэтому при угадывании по
+    // времени обложку не берём: пусть лучше её не будет, чем будет не та.
     const RELIABLE_MATCH = [
       "ссылка на трек", "id", "обложка", "ответ VK", "длительность и название",
     ];
     const known = RELIABLE_MATCH.indexOf(apiState.matchedBy) >= 0;
-    const panelUrl = known ? absoluteUrl(panelCoverUrl()) : "";
-    if (panelUrl) {
-      apiState.coverSource = "панель плеера";
-      return panelUrl;
+    if (known) {
+      const panelUrl = absoluteUrl(panelCoverUrl());
+      if (panelUrl) {
+        const big = biggestSameImage(panelUrl);
+        apiState.coverSource = big ? "панель плеера, крупный размер"
+                                   : "панель плеера";
+        return big || panelUrl;
+      }
     }
 
     for (const sel of COVER_SELECTORS) {
@@ -1140,14 +1150,60 @@ function playButtonDump() {
       for (const el of nodes) {
         const src = el.currentSrc || el.src || "";
         if (src && !src.startsWith("data:")) {
-          const ns = normalizePanelArt(src); if (ns) return ns;
+          const big = biggestSameImage(src);
+          if (big) {
+            apiState.coverSource = "страница, крупный размер";
+            return big;
+          }
+          const ns = normalizePanelArt(src);
+          if (ns) {
+            return ns;
+          }
         }
       }
     }
     return "";
   }
 
-  // --- медиаэлементы ---------------------------------------------------------
+  // Крупнейшая копия той же картинки на странице.
+//
+// Панель отдаёт обложку размером с иконку (34x34), хотя на странице та же
+// картинка лежит крупно. Отличается только имя файла... простите, только
+// размер и подпись: имя совпадает. Поэтому сравниваем по имени файла, а
+// размер берём настоящий (naturalWidth) - адресу доверять нельзя, в нём
+// всегда стоит чужой размер.
+function biggestSameImage(url) {
+    const name = fileNameOf(url);
+    if (!name) {
+      return "";
+    }
+    let best = "";
+    let bestSide = 0;
+    for (const el of document.querySelectorAll("img,[style*='background']")) {
+      let src = el.currentSrc || el.src
+        || el.getAttribute("src") || el.getAttribute("data-src") || "";
+      if (!src) {
+        const style = el.getAttribute && el.getAttribute("style");
+        const m = style && String(style).match(/url\((['"]?)([^)'"]+)\1\)/);
+        src = m ? m[2] : "";
+      }
+      if (!src || src.startsWith("data:") || fileNameOf(src) !== name) {
+        continue;
+      }
+      const side = Math.max(el.naturalWidth || 0, el.naturalHeight || 0);
+      if (side > bestSide) {
+        bestSide = side;
+        best = src;
+      }
+    }
+    return bestSide >= 200 ? best : "";
+  }
+
+  function fileNameOf(url) {
+    const text = String(url || "").split("?")[0];
+    const parts = text.split("/");
+    return parts[parts.length - 1] || "";
+  }
 
   function mediaElements() {
     const all = document.querySelectorAll("audio, video");

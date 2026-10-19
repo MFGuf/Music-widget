@@ -226,6 +226,48 @@ window.__token = "тестовый-токен";
     st = await ask("getState", null);
     assertEqual("page: без названия в DOM берётся заголовок вкладки", st.title, "Название");
 
+    // --- обложка: брать крупную копию, а не миниатюру ------------------
+    //
+    // Живой разбор показал: панель отдаёт обложку 34x34, но та же картинка
+    // (то же имя файла) лежит на странице крупно. Виджет показывал мыло.
+    // Проверяем, что из двух копий берётся большая по naturalWidth.
+    mockPlayer({ title: "Сонный паралич", artist: "Кто-то" });
+    var coverImg = document.querySelector(".player__cover img");
+    Object.defineProperty(coverImg, "naturalWidth", { value: 34, configurable: true });
+    Object.defineProperty(coverImg, "naturalHeight", { value: 34, configurable: true });
+    coverImg.src = "https://sun1-16.vkuserphoto.ru/impg/x/pk_jDkuUc00.jpg?size=34x34&sign=ab";
+    // Та же обложка, но крупно - в списке треков.
+    var bigImg = document.createElement("img");
+    bigImg.className = "audio-row__cover";
+    bigImg.src = "https://sun1-16.vkuserphoto.ru/impg/x/pk_jDkuUc00.jpg?size=300x300";
+    Object.defineProperty(bigImg, "naturalWidth", { value: 300, configurable: true });
+    Object.defineProperty(bigImg, "naturalHeight", { value: 300, configurable: true });
+    document.body.appendChild(bigImg);
+    st = await ask("getState", null);
+    assert("page: из двух копий обложки берётся крупная (300), а не миниатюра (34)",
+      st.coverUrl && st.coverUrl.indexOf("300x300") >= 0, st.coverUrl);
+
+    // Если крупной копии нет - отдаём хотя бы миниатюру, а не пустоту.
+    mockPlayer({ title: "Сонный паралич", artist: "Кто-то" });
+    var onlySmall = document.querySelector(".player__cover img");
+    Object.defineProperty(onlySmall, "naturalWidth", { value: 34, configurable: true });
+    Object.defineProperty(onlySmall, "naturalHeight", { value: 34, configurable: true });
+    onlySmall.src = "https://sun1-16.vkuserphoto.ru/impg/x/small.jpg?size=34x34";
+    st = await ask("getState", null);
+    assert("page: без крупной копии обложка всё равно есть (миниатюра)",
+      !!st.coverUrl && st.coverUrl.indexOf("small.jpg") >= 0, st.coverUrl);
+
+    // Картинки 0x0 (ленивые, ещё не загрузились) за крупные не считаются.
+    mockPlayer({ title: "Т", artist: "А" });
+    var lazy = document.createElement("img");
+    lazy.src = "https://sun1-16.vkuserphoto.ru/impg/x/lazy.jpg?size=600x600";
+    Object.defineProperty(lazy, "naturalWidth", { value: 0, configurable: true });
+    Object.defineProperty(lazy, "naturalHeight", { value: 0, configurable: true });
+    document.body.appendChild(lazy);
+    st = await ask("getState", null);
+    assert("page: незагруженная картинка (0x0) не выдаётся за крупную",
+      !st.coverUrl || st.coverUrl.indexOf("600x600") < 0, st.coverUrl);
+
     // --- признак воспроизведения -----------------------------------------
 
     mockPlayer({ playing: true });
