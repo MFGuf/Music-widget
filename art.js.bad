@@ -1,0 +1,32 @@
+  // У vkuserphoto с подписью часто работает вариант БЕЗ sign/c_uniq_tag/type.
+  // Подпись считается от размера: без неё картинка отдаётся крупнее.
+  if (/vkuserphoto\.ru\/impg\//i.test(text)) {
+    const noQuery = text.split('?')[0];
+    if (noQuery && noQuery !== text) { list.push(noQuery); }
+    let t = text;
+    t = t.replace(/[?&]sign=[^&#]+/gi, '');
+    t = t.replace(/[?&]c_uniq_tag=[^&#]+/gi, '');
+    t = t.replace(/[?&]quality=[^&#]+/gi, '');
+    t = t.replace(/[?&]+/g, '&');
+    t = t.replace(/\?&/g, '?');
+    t = t.replace(/[?&]$/, '');
+    if (t && t !== text && t !== noQuery) { list.push(t); }
+    let t2 = t || text;
+    t2 = t2.replace(/[?&]type=[^&#]+/gi, '');
+    t2 = t2.replace(/[?&]+/g, '&');
+    t2 = t2.replace(/\?&/g, '?');
+    t2 = t2.replace(/[?&]$/, '');
+    if (t2 && t2 !== t && t2 !== noQuery) { list.push(t2); }
+    const baseFor600 = t2 || t || noQuery || text.split('?')[0];
+    if (baseFor600) {
+      const sep = baseFor600.includes('?') ? '&' : '?';
+      list.push(baseFor600 + sep + 'size=' + ART_WANT_SIDE + 'x' + ART_WANT_SIDE);
+    }
+    let withAudio = t2 || t || (noQuery ? noQuery : text.split('?')[0]);
+    const sepA = withAudio.includes('?') ? '&' : '?';
+    list.push(withAudio + sepA + 'type=audio&size=' + ART_WANT_SIDE + 'x' + ART_WANT_SIDE);
+    list.push(withAudio + sepA + 'size=' + ART_WANT_SIDE + 'x' + ART_WANT_SIDE + '&type=audio');
+    let tAlbum = (t2 || t || (noQuery ? noQuery : text.split('?')[0]));
+    const sepAl = tAlbum.includes('?') ? '&' : '?';
+    list.push(tAlbum + sepAl + 'type=album&size=' + ART_WANT_SIDE + 'x' + ART_WANT_SIDE);
+  }

@@ -825,12 +825,24 @@ class MusicWidget:
             ("Обложки", self._art_text()),
             ("Адрес обложки", self._cover_url_text(probe)),
             ("Панель", self._panel_text(probe)),
+            ("Картинки", self._images_text(probe)),
             ("Разбор сделан", "по снимку, где музыка играла"
              if playing_seen else "по текущему снимку: музыка не играла"),
             ("Виджет", "%s, %s" % (shape, pinned)),
             ("Работает", journal.uptime_note(self._started_at)),
             ("Журнал", str(journal.path())),
         ]
+
+    def _images_text(self, item) -> str:
+        """Все картинки страницы с размерами.
+
+        Обложку искали по одному адресу из панели, и он оказался миниатюрой
+        34x34. Здесь видно, есть ли на странице та же обложка крупно - тогда
+        понятно, откуда её брать, а не подбирать параметры вслепую.
+        """
+        diag = (item or {}).get("diag") or {}
+        text = str(diag.get("images") or "").strip()
+        return text or "картинок не видно"
 
     def _panel_text(self, item) -> str:
         """Панель плеера: что в ней есть и откуда взята обложка.

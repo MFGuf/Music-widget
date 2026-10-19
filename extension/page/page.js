@@ -868,7 +868,48 @@ function currentTrack(media) {
 
   // Обложка, нарисованная в панели плеера. Именно её видит человек,
   // значит именно она соответствует играющему треку.
-  function panelCoverUrl() {
+    // Все картинки страницы с их размерами.
+//
+// Обложку мы искали вслепую: по одному адресу из панели, и он оказался
+// миниатюрой 34x34. Перебирать параметры этого адреса бессмысленно -
+// VK по нему отдаёт только иконку. Но на странице наверняка есть та же
+// обложка крупно: в большом плеере, в списке, в панели альбома. Чтобы
+// не гадать, соберём ВСЕ картинки и покажем их настоящие размеры - по
+// ним сразу видно, есть ли крупная версия и откуда её брать.
+function artDump() {
+    const seen = new Map();
+    const boxes = document.querySelectorAll("img,[style*='background']");
+    for (const el of boxes) {
+      let url = el.currentSrc || el.src
+        || el.getAttribute("src") || el.getAttribute("data-src") || "";
+      if (!url) {
+        const style = el.getAttribute && el.getAttribute("style");
+        const m = style && String(style).match(/url\((['"]?)([^)'"]+)\1\)/);
+        url = m ? m[2] : "";
+      }
+      if (!url || url.startsWith("data:")) {
+        continue;
+      }
+      const short = url.split("?")[0].split("/").pop();
+      const w = el.naturalWidth || el.width || 0;
+      const h = el.naturalHeight || el.height || 0;
+      const cls = typeof el.className === "string"
+        ? el.className.trim().split(/\s+/).slice(0, 2).join(".") : "";
+      const key = short + "@" + w;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.set(key, short + "=" + w + "x" + h
+        + (cls ? " (" + el.tagName.toLowerCase() + "." + cls + ")" : ""));
+    }
+    const list = Array.from(seen.values());
+    if (list.length > 25) {
+      list.length = 25;
+    }
+    return list.join(", ");
+  }
+
+function panelCoverUrl() {
     const panel = playerPanel();
     if (!panel) {
       return "";
@@ -1738,6 +1779,8 @@ const ARTIST_CLASS = /(^|[\s_-])arts?(ist)?($|[\s_-])/i;
         coverUrl: coverUrl || "",
         // Какие поля приходят в треках: по ним ищем обложку.
         fields: (apiState.fields || []).slice(0, 40),
+        // Все картинки страницы с размерами: видно, есть ли крупная обложка.
+        images: artDump(),
       },
     };
   }
